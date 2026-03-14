@@ -1,0 +1,135 @@
+Here is description of single event calculations
+It means that every event neet to have calculated values that are made automaticaly after user finish input card filling and click save button. Also this values must be recalculated if event input card was edited and saved by user.
+
+
+TO do this create First constant EVENT ID 1.
+Where all values are 1 or 1.00 etc date is 2026/01/28 Time 01:10
+ IT must be done to avoid division by 0 and negative numbers which will be incorect. 
+
+ Values to be calculated:
+
+ 1. Event Time
+ ST TIME [hh:mm]
+ Formula: Check present event date and time and previous event date and time. Check time difference.
+ Example 10.03.2026 12:00 - 09.03.2026 12:00 = 24:00 
+ 24 hours 00 minutes
+
+ ST TIME [24:00]
+
+ 2. DIFFERENTIAL RUNNING HOURS:
+
+FOR DEVICES
+
+ M/E_diff     [hh:mm]
+ D/G#1_diff   [hh:mm]
+ D/G#2_diff   [hh:mm]
+ D/G#3_diff   [hh:mm]
+ BLR_diff     [hh:mm]
+
+
+
+ Formula for total differential running hours:
+ Check difference of PRESENT RUNNING HOURS OF DEVICE and PREVIOUS RUNNING HOURS OF DEVICE
+ Then save this difference as total running for device in this event.
+WARNING: RUNNING HOURS ARE INPUT BY USER IN DECIMAL FORMAT. RECOUNT DECIMAL TO TIME AFTER CALCULATING DIFFERENCE
+EXAMPLE  91.90-80-70= 11.1
+ 11.1h is  equal to 11:06  (11h 06m)
+
+3. MAIN ENGINE PARAMETERS:
+
+AVG PWR [kWh]
+
+Average power Main Engine during event
+ Formula: (Check difference beetwen present ME_PWRMTR and previous ME_PWRMTR ) and divide it by present M/E_diff  
+ example: present M/E_diff = 100kWh , previous M/E_diff  = 80kWh, present M/E_diff = 01:24
+  100-80=20    01:24 is equal 1.4h  20/1.4=14,285714286  of course we need 14.29 [kW]  AVR PWR =14.29 [kW] in this event 
+
+AVG RPM [rpm]
+
+Average rounds per minunte of Main Engine during event
+Formula: (Check difference beetwen present ME_REV_C and previous ME_REV_C ) and divide it by present M/E_diff  
+ example: present ME_REV_C = 200rpm , previous ME_REV_C  = 100rpm, present M/E_diff = 01:24
+  200-100=100    01:24 is equal 84min  100/84=1,19047619  of course we need 1.19 [rpm]  AVG RPM = 1,19 [kW] in this event 
+
+ TTL PWR [kWh]
+
+Power produced by Main Engine during event
+ Formula: (Check difference beetwen present ME_PWRMTR and previous ME_PWRMTR ) 
+ example: present M/E_diff = 100kWh , previous M/E_diff  = 80kWh
+  100-80=20  of course we need 20.00 [kW]  TTL PWR =20.00 [kWh] in this event 
+
+  4. Oil ROBS and Consumption
+
+  Create new data cells in event
+
+  ME_SYS_ROB [ltrs]   Main Engine System oil quantities remain on board during event.
+  ME_CYL_ROB [ltrs]   Main Engine Cylinder oil quantities remain on board during event.
+  DG_SYS_ROB [ltrs]   Diesel Generator System oil quantities remain on board during event.
+
+
+ME_SYS_ROB  calculation formula: previous ME_SYS_ROB [ltrs] minus present  ME_SYS_ACC_cons [ltrs] equals to present  ME_SYS_ROB [ltrs] 
+
+
+ME_CYL_ACC_cons [mT] - Its accepted consumption value. If ME_SYS_COR_cons equals to 0 (means user dont input value) then ME_SYS_CALC_cons is accepted
+ME_CYL_COR_cons [mT] - Its corrected by user consumption. It is USER input. Its not part of inpurt card (it will be described further)
+
+
+   ME_SYS_CALC_cons [ltrs]  - User Input from OIL CONSUMPTION CARD (it will be explained later. its NOT part of input card)
+   ME_CYL_CALC_cons [ltrs]  - Formula: difference of previous CYL_OIL_COUNT and present CYL_OIL_COUNT. Example 8671-8670=71  ME_CYL_CALC_cons = 71 [ltrs]
+   DG_SYS_CALC_cons [ltrs]  - User Input from OIL CONSUMPTION CARD (it will be explained later. Its not input card part)
+
+ 5.  Fuel ROBS and Consumption
+
+ Create new data cells in event
+
+ HFO_ROB [mT] Heavy Fuel Oil Quantities remain on board during event
+ DO_ROB  [mT] Diesel Oil remain on board during event
+
+HFO_ROB and DO_ROB update
+ ##FO_ROB formula:  previous HFO_ROB minus ME_HFO_ACC_cons minus DG_HFO_ACC_cons minus BLR_HFO_ACC_cons ##equals present  HFO_ROB 
+ ##DO_ROB formula:   previous DO_ROB minus ME_DO_ACC_cons minus DG_DO_ACC_cons minus BLR_DO_ACC_cons ##equals present DO_ROB
+
+ ME_FO_set  - User input. Value is string.  Value can be = HFO or DO (its NOT part of input card, it will be described further)
+ DG_FO_set  - User input. Value is string.  Value can be = HFO or DO (its NOT part of input card, it will be described further)
+ BLR_FO_set - User input. Value is string.  Value can be = HFO or DO (its NOT part of input card, it will be described further)
+
+ ME_HFO_CALC_cons [mT] - Main Engine consumption of Heavy Fuel Oil. Formula: ((present MAIN_FLMTR minus previous MAIN_FLMTR equals to ME_HFO_cons)*0.919)/1000
+ ME_DO_CALC_cons  [mT] - Main Engine consumption of Diesel Fuel Oil. Formula: ((present MAIN_FLMTR minus previous MAIN_FLMTR equals to ME_DO_cons)*0.870)/1000
+ 
+ BLR_HFO_CALC__cons [mT] - Boiler consumption of Heavy Fuel Oil. Formula: ((present BLR_FLMTR minus previous BLR_FLMTR equals to BLR_HFO_cons)*0.919)/1000
+ BLR_DO_CALC_cons [mT] - Boiler consumption of DIesel Fuel Oil. Formula: ((present BLR_FLMTR minus previous BLR_FLMTR equals to BLR_DO_cons)*0.870)/1000
+
+ DG_HFO_CALC_cons [mT] - Diesel Generator consumption of Heafy Fuel Oil. Formula: ((present DG_IN_FLMTR minus previous DG_IN_FLMTR minus present DG_OUT_FLMTR plus previous DG_OUT_FLMTR)*0.919)/1000
+ DG_DO_CALC_cons [mT] - Diesel Generator consumption of Diesel Fuel Oil. Formula: ((present DG_IN_FLMTR minus previous DG_IN_FLMTR minus present DG_OUT_FLMTR plus previous DG_OUT_FLMTR)*0.870)/1000
+
+ME_HFO_ACC_cons     [mT] - Its accepted consumption value. If ME_HFO_COR_cons equals to 0 (means user dont input value) then ME_HFO_CALC_cons is accepted
+ME_DO_ACC_cons      [mT] - Its accepted consumption value. If ME_DO_COR_cons equals to 0 (means user dont input value) then ME_HFO_CALC_cons is accepted
+DG_HFO_ACC_cons     [mT] - Its accepted consumption value. If DG_HFO_COR_cons equals to 0 (means user dont input value) then DG_HFO_CALC_cons is accepted
+DG_DO_ACC_cons      [mT] - Its accepted consumption value. If DG_DO_COR_cons equals to 0 (means user dont input value) then DG_DO_CALC_cons is accepted
+BLR_HFO_ACC_cons    [mT] - Its accepted consumption value. If BLR_HFO_COR_cons equals to 0 (means user dont input value) then BLR_HFO_CALC_cons is accepted
+BLR_DO_ACC_cons     [mT] - Its accepted consumption value. If BLR_DO_COR_cons equals to 0 (means user dont input value) then BLR_DO_CALC_cons is accepted
+
+ME_HFO_COR_cons [mT] - Its corrected by user consumption. It is USER input. Its not part of inpurt card (it will be described further)
+ME_DO_COR_cons [mT] - Its corrected by user consumption. It is USER input. Its not part of inpurt card (it will be described further)
+DG_HFO_COR_cons [mT] - Its corrected by user consumption. It is USER input. Its not part of inpurt card (it will be described further)
+DG_DO_COR_cons [mT] - Its corrected by user consumption. It is USER input. Its not part of inpurt card (it will be described further)
+BLR_HFO_COR_cons [mT] - Its corrected by user consumption. It is USER input. Its not part of inpurt card (it will be described further)
+BLR_DO_COR_cons [mT] - Its corrected by user consumption. It is USER input. Its not part of inpurt card (it will be described further)
+
+IF ME_FO_set is HFO then only ME_HFO_ACC_cons is used at end
+IF ME_FO_set is DO then only ME_DO_ACC_cons is used at end
+IF DG_FO_set is HFO then only DG_HFO_ACC_cons is used at end
+IF DG_FO_set is DO then only DG_DO_ACC_cons is used at end
+IF BLR_FO_set is HFO then only BLR_HFO_ACC_cons is used at end
+IF BLR_FO_set is DO then only BLR_DO_ACC_cons is used at end
+
+Update
+
+Please create new data cells in event
+
+HFO_BNKR [mT] - user input of bunkered Heavy Fuel Oil
+DO_BNKR  [mT] - user input of bunkered Diesel Oil
+
+UPDATED FORMULA FOR REMAIN ON BOARD
+ FO_ROB formula:  previous HFO_ROB minus ME_HFO_ACC_cons minus DG_HFO_ACC_cons minus BLR_HFO_ACC_cons plus present HFO_BNKR equals present  HFO_ROB 
+ DO_ROB formula:   previous DO_ROB minus ME_DO_ACC_cons minus DG_DO_ACC_cons minus BLR_DO_ACC_cons plus present DO_BNKR equals present DO_ROB

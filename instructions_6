@@ -1,0 +1,29 @@
+CHart cards
+
+
+we need new card . SFOC Card
+
+
+To analyze if counters not malfunctioning or fuel usage is not increasing somehow we will need to make chart 
+
+M/E chart Card
+For M/E every event have ME calculated and corrected fuel consumption it also have power produced.
+Basicaly SFOC is [g/kWh]   so first we neet to divide fuel consumption in mT by 0,919(if using HFO), or by 0,870(if usingDO)
+Then we have fuel in tonnes. divide Fuel consumption *1000*1000  and we have grams
+
+Then divide consumed fuel by power produced and we have SFOC of current event. 
+The we do the same for ME corrected (adjusted by user) fuel consumption. 
+That will give clear view of difference
+Then Dark red colour of line is calculated and red is corected line
+SFOC is given g/kWh
+
+D/G chart Card
+For diesel generator better option is to use its working time. So take all time that generator worked in event. when having total time. divide generators total consumption by 0,919 or 0,870.  Then divide consumpton by time and we will fuel consumption per hour. 
+Of sourse we want also have grams per hour
+calculated dark red, corrected red.
+
+for card make same width as Event Cards in their 100 percent size. i want to have small charts to just have a quick look as daily basis. . Charts wil be small but logbok is long so i need chart that is possible to just scroll left and right without any fireworks. 
+
+I think charts would also need to have separate files to store calculated data and just be opened when app is running to not overload processor. when new event saved then new chart point should be created.
+
+only one adition for charts, if user put mouse coursor in measured point on chart small display should apper and show consumptonn per hour for dgs or per kwh for me.

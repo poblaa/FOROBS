@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data files (generated at runtime)
+logbook.db
+chart_data.json
+
+# Checkpoints (dev only)
+checkpoints/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Old/unused
+old_notuse/

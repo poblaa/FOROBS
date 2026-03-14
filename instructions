@@ -1,0 +1,80 @@
+Start from begining.
+
+Electronic loogbok with data calculator for ship engineers
+
+There is existing app elcalc (see folder)
+
+Elcalc is going to be only function of bigger application. 
+We will continue design from elcalc which is clear and easy to use.
+
+First we need to create new main page called logbook
+
+Loogbok is place where engineer (user) is going to place values from flowmeters, running hours of devices, fuel ROB (remain on board etc)
+
+General overviev of graphical interface.
+
+There is main display with input card.
+Input card is always visible and ready to recieve input from physical values (user input)
+
+Input card values that user input.
+ID - automaticaly added unique number. It cannot be changed. Every input have ID+1 value  (input 17 - ID 17, input 123 - ID 123 etc)
+DATE DD:MM:YY
+TIME HH:MM  (time can be input in following example  01:06, 02:12 16:24  - means 6 minutes separation. it will be used in further calculations.)
+EVENT  have to be chosen from list  NOON, STBY, EOSP, SOSP, FWE, ARRIVAL, DEPARTURE, SHIFTING-BEG, SHIFTING-END, MID
+PLACE can be manual input like EMDEN, GDYNIA or any city name BUT There have to be two constant inputs that can be chosen from list SCRUBBER OL-CL, SCRUBBER CL-OL
+ME REV C        engine rpm counter [rpm] (revolutions per MINUTE)
+MAIN FLMTR      fuel flowmeter value [mT]
+DG IN FLMTR     fuel flowmeter value [mT]
+DG OUT FLMTR    fuel flowmeter value [mT]
+BLR FLMTR       fuel flowmeter value [mT]
+CYL OIL COUNT   oil flowmeter [ltrs]
+ME PWRMTR       power produced by engine [kWh]
+M/E HRS         running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+D/G 1 HRS       running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+D/G 2 HRS       running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+D/G 3 HRS       running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+BOILER HRS      running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+D/G1 MWh        power produced by Diesel Generator 1 [kWH]
+D/G2 MWh        power produced by Diesel Generator 2 [kWH]
+D/G3 MWh        power produced by Diesel Generator 2 [kWH]
+SOx/CO2         ratio of Sulphur Oxides and Carbon Dioxide [no SI, just number]
+OCL PP A        running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+OCL PP B        running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+OCL PP C        running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+PHE A           running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+PHE B           running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+SEA TEMP        sea water temperature [degC]
+ST LO TMP       stern tube temperature [degC]
+WCU SEP         running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+COMP 1          running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+COMP 2          running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+W. COMP         running hours of device [hh:mm] be carefull, running hours counters are in decimal values so 17.90 is equal to 17:54 - 17h 54min
+
+Input card have to be created in two rows for ease of input.
+1st row is for inputs from TIME to SOx/CO2
+2nd row is for inputs from OCL PP A to W. COMP
+
+Close input card in frame with to rows as mentioned above. frame is for separation and beter visibility later
+
+Input card fillup have two requirements
+IF Event name piced by user is MID, then all parameters must be filled by user.
+ELSE Event name is different than MID, then only first row must be filled and second row is not active and cannot be filled
+
+
+Logs must be keept in separate file as some sort of database. Pick solution that will be light, easy to modify when tens of tousands or more  of entries will exist.
+Values from data base also will be constantly accesible from application to view and modify.
+
+On main screen on the left side there must be panel.
+This panel will be called Events loogbok
+
+Panel is for display all existing events that were created by user.
+In this panel all entries must be showed in Excel form 
+One row is one event entry where every cell is for saved or calculated values (calculations will be explained in instruction_2 that will be created after results will be satysfying)
+
+This panel have to be able to expand .
+Expansion have to be done by user. USer click and hold by mouse coursor by side of frame and can dynamicaly shrink or expand panel. 
+This will give user good visibility of historical inputs.
+
+Under latest entry please put small NEW ENTRY button that will create empty event for filling up.
+
+When NEW ENTRY button clicked the input card is empty and ready for inputs.
