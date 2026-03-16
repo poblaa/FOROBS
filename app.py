@@ -2445,7 +2445,7 @@ with _eci_col:
             with _c2:
                 if _k1:
                     _corr_vals[_k1] = st.text_input(
-                        '',
+                        _k1,
                         value=str(c2_def.get(_k1, '')),
                         key=f'c2_corr_{_k1}_{_i}{_key_suffix}',
                         label_visibility='collapsed'
@@ -2456,7 +2456,7 @@ with _eci_col:
                 st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _corr_vals[_k2] = st.text_input(
-                    '',
+                    _k2,
                     value=str(c2_def.get(_k2, '')),
                     key=f'c2_corr_{_k2}_{_i}{_key_suffix}',
                     label_visibility='collapsed'
@@ -2479,7 +2479,7 @@ with _eci_col:
             with _c2:
                 if _k1:
                     _fuel_vals[_k1] = st.text_input(
-                        '',
+                        _k1,
                         value=str(c2_def.get(_k1, '')),
                         key=f'c2_fuel_{_k1}_{_i}{_key_suffix}',
                         label_visibility='collapsed'
@@ -2492,7 +2492,7 @@ with _eci_col:
                 st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _fuel_vals[_k2] = st.text_input(
-                    '',
+                    _k2,
                     value=str(c2_def.get(_k2, '')),
                     key=f'c2_fuel_{_k2}_{_i}{_key_suffix}',
                     label_visibility='collapsed'
@@ -2504,7 +2504,8 @@ with _eci_col:
     if c2_submitted and _eid and _eid > 1:
         # DEBUG: log raw _fuel_vals to file
         import json as _dbg_json
-        with open('/tmp/forobs_debug.log', 'a') as _df:
+        _dbg_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'forobs_debug.log')
+        with open(_dbg_log_path, 'a') as _df:
             _df.write(f"\n=== SAVE EVENT CARD for ID {_eid} ===\n")
             _df.write(f"_fuel_vals = {_dbg_json.dumps({k: repr(v) for k,v in _fuel_vals.items()})}\n")
             _df.write(f"_corr_vals = {_dbg_json.dumps({k: repr(v) for k,v in _corr_vals.items()})}\n")
@@ -2526,7 +2527,7 @@ with _eci_col:
             'dg_sys_bnkr':      safe_float(_fuel_vals.get('dg_sys_bnkr', 0)),
         }
         # DEBUG: log c2_data
-        with open('/tmp/forobs_debug.log', 'a') as _df:
+        with open(_dbg_log_path, 'a') as _df:
             _df.write(f"c2_data = {_dbg_json.dumps({k: repr(v) for k,v in c2_data.items()})}\n")
         update_event(_eid, c2_data)
         with st.spinner(f"Recalculating chain from ID {_eid}…"):
@@ -2536,7 +2537,7 @@ with _eci_col:
         except Exception:
             pass
         # DEBUG: verify DB after save
-        with open('/tmp/forobs_debug.log', 'a') as _df:
+        with open(_dbg_log_path, 'a') as _df:
             _dbg_conn = get_connection()
             _dbg_row = _dbg_conn.execute(f"SELECT hfo_bnkr, do_bnkr, me_sys_bnkr FROM events WHERE id = {_eid}").fetchone()
             _df.write(f"DB after save: hfo_bnkr={_dbg_row[0]}, do_bnkr={_dbg_row[1]}, me_sys_bnkr={_dbg_row[2]}\n")
