@@ -2770,15 +2770,13 @@ with _inp_col:
             st.warning("No event selected to delete. Click an event ID in the logbook first.")
 
 with _func_col:
-    with st.form("functions_panel_form"):
-        st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-        _fp_ok, _fp_url = _ensure_elcalc_server()
-        if _fp_ok:
-            st.link_button("Fuel plan", _fp_url, use_container_width=True)
-        else:
-            st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
-            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
-        st.form_submit_button("_", disabled=True, type="secondary")
+    st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
+    _fp_ok, _fp_url = _ensure_elcalc_server()
+    if _fp_ok:
+        st.link_button("Fuel plan", _fp_url, use_container_width=True)
+    else:
+        st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
+        st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
 
     if st.session_state.confirm_delete and st.session_state.editing_id:
         del_id = st.session_state.editing_id
