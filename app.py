@@ -5,14 +5,57 @@ Main application - Logbook page
 
 import streamlit as st
 import pandas as pd
+import altair as alt
 import sqlite3
 from datetime import datetime
 import os
 import json
 import time
+import sys
+import socket
+import subprocess
 
 # Database setup
 DB_PATH = "logbook.db"
+ELCALC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elcalc')
+ELCALC_PORT = 8502
+
+def _is_local_port_open(port, host='127.0.0.1', timeout=0.2):
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        return sock.connect_ex((host, int(port))) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+def _ensure_elcalc_server():
+    """Ensure local static server for elcalc is running; return (ok, url)."""
+    _url = f"http://127.0.0.1:{ELCALC_PORT}/index.html"
+    if not os.path.isdir(ELCALC_DIR):
+        return False, _url
+    if _is_local_port_open(ELCALC_PORT):
+        return True, _url
+    try:
+        _popen_kwargs = {
+            'cwd': ELCALC_DIR,
+            'stdout': subprocess.DEVNULL,
+            'stderr': subprocess.DEVNULL,
+        }
+        if os.name == 'nt' and hasattr(subprocess, 'CREATE_NO_WINDOW'):
+            _popen_kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+        subprocess.Popen(
+            [sys.executable, '-m', 'http.server', str(ELCALC_PORT), '--bind', '127.0.0.1'],
+            **_popen_kwargs,
+        )
+        time.sleep(0.4)
+        return _is_local_port_open(ELCALC_PORT), _url
+    except Exception:
+        return False, _url
 
 # Card dimension settings (editable in card_settings.json)
 _CARD_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'card_settings.json')
@@ -26,8 +69,6 @@ CARD_S = _load_card_settings()
 _inp_s = CARD_S.get('input_card', {})
 _eco_s = CARD_S.get('event_card_output', {})
 _eci_s = CARD_S.get('event_card_input', {})
-_msc_s = CARD_S.get('me_sfoc_chart', {})
-_dgc_s = CARD_S.get('dg_chart', {})
 
 def init_db():
     """Initialize SQLite database with events table"""
@@ -530,6 +571,17 @@ def _hhmm_to_hours(v):
     except (ValueError, IndexError):
         return 0.0
 
+
+def _hhmm_to_minutes(v):
+    """Convert HH:MM string to integer minutes."""
+    if not v or v == 'None' or v == '00:00':
+        return 0
+    try:
+        parts = str(v).split(':')
+        return int(parts[0]) * 60 + int(parts[1])
+    except (ValueError, IndexError):
+        return 0
+
 def _compute_chart_point(ev):
     """Compute M/E SFOC and D/G cons/hr for one event row (dict)."""
     def _g(d, k):
@@ -543,11 +595,7 @@ def _compute_chart_point(ev):
     date_s = str(ev.get('date', ''))
     time_s = str(ev.get('time', ''))
 
-    # M/E fuel setting
-    me_fo = str(ev.get('me_fo_set', 'HFO')).upper()
-    density = 0.919 if me_fo == 'HFO' else 0.870
-
-    # M/E calculated SFOC: (acc_cons / density) / ttl_pwr * 1_000_000  [g/kWh]
+    # M/E calculated SFOC: fuel [mT] / ttl_pwr [kWh] * 1_000_000 = g/kWh
     me_calc_hfo = _g(ev, 'me_hfo_acc_cons')
     me_calc_do  = _g(ev, 'me_do_acc_cons')
     me_calc_fuel = me_calc_hfo + me_calc_do  # total ME fuel in mT
@@ -555,7 +603,7 @@ def _compute_chart_point(ev):
 
     me_sfoc_calc = 0.0
     if ttl_pwr > 0 and me_calc_fuel > 0:
-        me_sfoc_calc = round((me_calc_fuel / density) / ttl_pwr * 1_000_000, 2)
+        me_sfoc_calc = round(me_calc_fuel / ttl_pwr * 1_000_000, 2)
 
     # M/E corrected SFOC
     me_cor_hfo = _g(ev, 'me_hfo_cor_cons')
@@ -563,33 +611,29 @@ def _compute_chart_point(ev):
     me_cor_fuel = me_cor_hfo + me_cor_do
     me_sfoc_cor = 0.0
     if ttl_pwr > 0 and me_cor_fuel > 0:
-        me_sfoc_cor = round((me_cor_fuel / density) / ttl_pwr * 1_000_000, 2)
+        me_sfoc_cor = round(me_cor_fuel / ttl_pwr * 1_000_000, 2)
 
-    # D/G fuel setting
-    dg_fo = str(ev.get('dg_fo_set', 'HFO')).upper()
-    dg_density = 0.919 if dg_fo == 'HFO' else 0.870
+    # D/G total running time (minutes)
+    dg1_min = _hhmm_to_minutes(ev.get('dg1_diff'))
+    dg2_min = _hhmm_to_minutes(ev.get('dg2_diff'))
+    dg3_min = _hhmm_to_minutes(ev.get('dg3_diff'))
+    dg_total_min = dg1_min + dg2_min + dg3_min
 
-    # D/G total running hours
-    dg1_h = _hhmm_to_hours(ev.get('dg1_diff'))
-    dg2_h = _hhmm_to_hours(ev.get('dg2_diff'))
-    dg3_h = _hhmm_to_hours(ev.get('dg3_diff'))
-    dg_total_h = dg1_h + dg2_h + dg3_h
-
-    # D/G calculated cons/hr
+    # D/G calculated consumption [mT/h]
     dg_calc_hfo = _g(ev, 'dg_hfo_acc_cons')
     dg_calc_do  = _g(ev, 'dg_do_acc_cons')
     dg_calc_fuel = dg_calc_hfo + dg_calc_do
     dg_cons_calc = 0.0
-    if dg_total_h > 0 and dg_calc_fuel > 0:
-        dg_cons_calc = round((dg_calc_fuel / dg_density) / dg_total_h * 1_000_000, 2)  # g/hr
+    if dg_total_min > 0 and dg_calc_fuel > 0:
+        dg_cons_calc = round((dg_calc_fuel / dg_total_min) * 60.0, 3)
 
-    # D/G corrected cons/hr
+    # D/G corrected consumption [mT/h]
     dg_cor_hfo = _g(ev, 'dg_hfo_cor_cons')
     dg_cor_do  = _g(ev, 'dg_do_cor_cons')
     dg_cor_fuel = dg_cor_hfo + dg_cor_do
     dg_cons_cor = 0.0
-    if dg_total_h > 0 and dg_cor_fuel > 0:
-        dg_cons_cor = round((dg_cor_fuel / dg_density) / dg_total_h * 1_000_000, 2)  # g/hr
+    if dg_total_min > 0 and dg_cor_fuel > 0:
+        dg_cons_cor = round((dg_cor_fuel / dg_total_min) * 60.0, 3)
 
     return {
         'id': eid,
@@ -707,10 +751,6 @@ def calculate_event(event_id):
     conn.commit()
     conn.close()
     invalidate_events_cache()
-    try:
-        update_chart_point(event_id)
-    except Exception:
-        pass
 
 
 def recalculate_chain(from_id):
@@ -747,14 +787,6 @@ def recalculate_chain(from_id):
 
     conn.close()
     invalidate_events_cache()
-
-    # Update chart data for all affected events
-    try:
-        affected_ids = [u[-1] for u in updates] if updates else []
-        for _aid in affected_ids:
-            update_chart_point(_aid)
-    except Exception:
-        pass
 
 
 def ensure_calculated_fields_ready_once():
@@ -817,16 +849,34 @@ def hhmm_to_decimal(hhmm_str):
 
 
 # Helper: safe float parse
+def _normalize_decimal_input(val):
+    """Normalize user numeric input (accept both decimal dot and comma)."""
+    if val is None:
+        return None
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        return s.replace(',', '.')
+    return val
+
+
 def safe_float(val, fallback=0.0):
+    nval = _normalize_decimal_input(val)
+    if nval is None:
+        return fallback
     try:
-        return round(float(val), 2) if val else fallback
+        return round(float(nval), 2)
     except (ValueError, TypeError):
         return fallback
 
 def safe_int(val, fallback=0):
     """Parse to integer, return fallback if empty/invalid"""
+    nval = _normalize_decimal_input(val)
+    if nval is None:
+        return fallback
     try:
-        return int(float(val)) if val and str(val).strip() else fallback
+        return int(float(nval))
     except (ValueError, TypeError):
         return fallback
 
@@ -856,8 +906,10 @@ VALID_MINUTES = {'00','06','12','18','24','30','36','42','48','54'}
 # ---- Card layout persistence ----
 LAYOUT_FILE = "card_layout.json"
 DEFAULT_LAYOUT = {
-    "event_card": {"top": 10, "right": 500, "locked": False},
-    "input_card": {"top": 10, "right": 10, "locked": False},
+    "event_card_output": {"top": 17, "right": 500, "locked": False},
+    "event_card_input": {"top": 17, "right": 950, "locked": False},
+    "input_card": {"top": 20, "right": 19, "locked": False},
+    "functions_panel": {"top": 650, "right": 19, "locked": False},
     "me_sfoc_chart": {"top": 440, "right": 500, "locked": False},
     "dg_chart": {"top": 440, "right": 950, "locked": False}
 }
@@ -956,8 +1008,7 @@ st.markdown("""
     }
     /* Disable Streamlit's native resize handle */
     [data-testid="stSidebar"]::after,
-    [data-testid="stSidebar"] [data-testid="stSidebarResizeHandle"],
-    [data-testid="stSidebar"] > div[style*="cursor"] {
+    [data-testid="stSidebar"] [data-testid="stSidebarResizeHandle"] {
         display: none !important;
         pointer-events: none !important;
     }
@@ -1310,6 +1361,24 @@ st.markdown("""
         height: 0 !important;
         overflow: hidden !important;
     }
+    [data-testid="stForm"]:has(.chart-card-marker) {
+        overflow: hidden !important;
+    }
+    [data-testid="stForm"]:has(.chart-card-marker) .card-header-right {
+        margin-bottom: 0 !important;
+        padding: 2px 0 !important;
+    }
+    [data-testid="stForm"]:has(.chart-card-marker) [data-testid="stElementContainer"] {
+        margin-bottom: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    [data-testid="stForm"]:has(.chart-card-marker) [data-testid="stVegaLiteChart"],
+    [data-testid="stForm"]:has(.chart-card-marker) .vega-embed,
+    [data-testid="stForm"]:has(.chart-card-marker) canvas,
+    [data-testid="stForm"]:has(.chart-card-marker) svg {
+        max-width: 100% !important;
+        overflow: hidden !important;
+    }
     .chart-card-marker { display: none; height: 0; }
 </style>
 """, unsafe_allow_html=True)
@@ -1364,8 +1433,8 @@ _main_js = """
         sb.style.maxWidth = (window.parent.innerWidth * MAX_W_PCT) + 'px';
         sb.style.transition = 'none';
         
-        // Kill Streamlit's native resize: find and disable any resize handles
-        const nativeHandles = sb.querySelectorAll('[style*="cursor: col-resize"], [style*="cursor: ew-resize"]');
+        // Kill only Streamlit's native sidebar resize handle
+        const nativeHandles = sb.querySelectorAll('[data-testid="stSidebarResizeHandle"]');
         nativeHandles.forEach(h => {
             h.style.display = 'none';
             h.style.pointerEvents = 'none';
@@ -1457,8 +1526,8 @@ _main_js = """
             sb.style.display = 'block';
             sb.style.visibility = 'visible';
             
-            // Re-kill any native resize handles Streamlit recreates
-            const handles = sb.querySelectorAll('[style*="cursor: col-resize"], [style*="cursor: ew-resize"]');
+            // Re-kill only Streamlit's native sidebar resize handle
+            const handles = sb.querySelectorAll('[data-testid="stSidebarResizeHandle"]');
             handles.forEach(h => {
                 h.style.display = 'none';
                 h.style.pointerEvents = 'none';
@@ -1536,16 +1605,79 @@ _main_js = """
         if (best) best.focus();
     }, true);
 })();
+
+// Input UX: disable browser autosuggestions and add PLACE quick options (OL-CL / CL-OL)
+(function() {
+    const doc = window.parent.document;
+    const DATALIST_ID = 'forobs-place-options';
+
+    function ensurePlaceDatalist() {
+        let dl = doc.getElementById(DATALIST_ID);
+        if (dl) return dl;
+        dl = doc.createElement('datalist');
+        dl.id = DATALIST_ID;
+        const o1 = doc.createElement('option');
+        o1.value = 'OL-CL';
+        const o2 = doc.createElement('option');
+        o2.value = 'CL-OL';
+        dl.appendChild(o1);
+        dl.appendChild(o2);
+        doc.body.appendChild(dl);
+        return dl;
+    }
+
+    function paintPlaceInput(inp) {
+        const v = String(inp.value || '').trim().toUpperCase();
+        if (v === 'OL-CL') {
+            inp.style.setProperty('background-color', '#eaf8ee', 'important');
+            inp.style.setProperty('border-color', '#b7e2c0', 'important');
+        } else if (v === 'CL-OL') {
+            inp.style.setProperty('background-color', '#eaf3ff', 'important');
+            inp.style.setProperty('border-color', '#bcd3f5', 'important');
+        } else {
+            inp.style.removeProperty('background-color');
+            inp.style.removeProperty('border-color');
+        }
+    }
+
+    function applyInputUx() {
+        ensurePlaceDatalist();
+
+        const allInputs = doc.querySelectorAll('section[data-testid="stMain"] input:not([type="hidden"])');
+        allInputs.forEach((inp) => {
+            inp.setAttribute('autocomplete', 'off');
+            inp.setAttribute('autocorrect', 'off');
+            inp.setAttribute('autocapitalize', 'off');
+            inp.setAttribute('spellcheck', 'false');
+            inp.setAttribute('data-lpignore', 'true');
+
+            const aria = (inp.getAttribute('aria-label') || '').trim().toUpperCase();
+            if (aria === 'PLACE') {
+                inp.setAttribute('list', DATALIST_ID);
+                if (!inp.dataset.placeUxBound) {
+                    inp.addEventListener('input', () => paintPlaceInput(inp));
+                    inp.addEventListener('change', () => paintPlaceInput(inp));
+                    inp.dataset.placeUxBound = '1';
+                }
+                paintPlaceInput(inp);
+            }
+        });
+    }
+
+    applyInputUx();
+    setInterval(applyInputUx, 800);
+})();
 </script>
 """
 components.html(_main_js, height=0)
 
-# Card drag-and-drop positioning system (5 cards) with zoom-resize
+# Card drag-and-drop positioning system (6 cards) with zoom-resize
 _eco_l = _card_layout['event_card_output']
 _eci_l = _card_layout['event_card_input']
 _inp_l = _card_layout['input_card']
-_msc_l = _card_layout.get('me_sfoc_chart', {'top': 440, 'right': 500, 'locked': False})
-_dgc_l = _card_layout.get('dg_chart', {'top': 440, 'right': 950, 'locked': False})
+_func_l = _card_layout['functions_panel']
+_me_chart_l = _card_layout['me_sfoc_chart']
+_dg_chart_l = _card_layout['dg_chart']
 _card_pos_js = """<script>
 (function(){
     var doc = window.parent.document, win = window.parent;
@@ -1565,13 +1697,17 @@ _card_pos_js = """<script>
             baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
             border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
         },
+        functions_panel: {
+            baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
+            border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
+        },
         me_sfoc_chart: {
-            baseW: __MSC_BASE_W__, minZ: __MSC_MIN_Z__, maxZ: __MSC_MAX_Z__, defZ: __MSC_DEF_Z__,
-            border: '__MSC_BORDER__', borderRadius: '__MSC_BORDER_RADIUS__', padding: '__MSC_PADDING__'
+            baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
+            border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
         },
         dg_chart: {
-            baseW: __DGC_BASE_W__, minZ: __DGC_MIN_Z__, maxZ: __DGC_MAX_Z__, defZ: __DGC_DEF_Z__,
-            border: '__DGC_BORDER__', borderRadius: '__DGC_BORDER_RADIUS__', padding: '__DGC_PADDING__'
+            baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
+            border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
         }
     };
 
@@ -1579,8 +1715,9 @@ _card_pos_js = """<script>
         event_card_output: {top: __ECO_TOP__, right: __ECO_RIGHT__, locked: __ECO_LOCKED__, zoom: CFG.event_card_output.defZ},
         event_card_input:  {top: __ECI_TOP__, right: __ECI_RIGHT__, locked: __ECI_LOCKED__, zoom: CFG.event_card_input.defZ},
         input_card:        {top: __INP_TOP__, right: __INP_RIGHT__, locked: __INP_LOCKED__, zoom: CFG.input_card.defZ},
-        me_sfoc_chart:     {top: __MSC_TOP__, right: __MSC_RIGHT__, locked: __MSC_LOCKED__, zoom: CFG.me_sfoc_chart.defZ},
-        dg_chart:          {top: __DGC_TOP__, right: __DGC_RIGHT__, locked: __DGC_LOCKED__, zoom: CFG.dg_chart.defZ}
+        functions_panel:   {top: __FUNC_TOP__, right: __FUNC_RIGHT__, locked: __FUNC_LOCKED__, zoom: CFG.functions_panel.defZ},
+        me_sfoc_chart:     {top: __ME_CH_TOP__, right: __ME_CH_RIGHT__, locked: __ME_CH_LOCKED__, zoom: CFG.me_sfoc_chart.defZ},
+        dg_chart:          {top: __DG_CH_TOP__, right: __DG_CH_RIGHT__, locked: __DG_CH_LOCKED__, zoom: CFG.dg_chart.defZ}
     };
 
     function loadPos() {
@@ -1589,7 +1726,7 @@ _card_pos_js = """<script>
             var s = win.localStorage.getItem('cardPos');
             if (s) {
                 var p = JSON.parse(s);
-                if (!p.event_card_output || !p.event_card_input) {
+                if (!p.event_card_output || !p.event_card_input || !p.input_card) {
                     p = JSON.parse(JSON.stringify(DEFS));
                 }
                 // Ensure zoom field exists (migration)
@@ -1617,18 +1754,28 @@ _card_pos_js = """<script>
 
     var drag = null, resize = null;
 
+    function scaledWidth(cfg, zoom) {
+        return Math.round(cfg.baseW * zoom);
+    }
+
+    function syncCardPos(form, p) {
+        var r = form.getBoundingClientRect();
+        p.top = Math.max(0, Math.round(r.top));
+        p.right = Math.max(0, Math.round(doc.documentElement.clientWidth - r.right));
+    }
+
     function onMove(e) {
         var cx = e.touches ? e.touches[0].clientX : e.clientX;
         var cy = e.touches ? e.touches[0].clientY : e.clientY;
 
         if (resize) {
-            // Resize: compute new apparent width, derive zoom
+            // Resize from left-anchored card so handle follows cursor naturally
             var newW = resize.w0 + (cx - resize.sx);
             var cfg = CFG[resize.key];
             var z = newW / cfg.baseW;
             z = Math.max(cfg.minZ, Math.min(cfg.maxZ, z));
             resize.p.zoom = z;
-            resize.f.style.zoom = z;
+            resize.f.style.transform = 'scale(' + z + ')';
             // Update label in bar
             var zl = resize.f.querySelector('.zoom-label');
             if (zl) zl.textContent = Math.round(z * 100) + '%';
@@ -1637,20 +1784,22 @@ _card_pos_js = """<script>
 
         if (drag) {
             drag.p.top = Math.max(0, drag.t0 + cy - drag.sy);
-            drag.p.right = Math.max(0, drag.r0 - (cx - drag.sx));
+            drag.p.left = Math.max(0, drag.l0 + (cx - drag.sx));
             drag.f.style.top = drag.p.top + 'px';
-            drag.f.style.right = drag.p.right + 'px';
+            drag.f.style.left = drag.p.left + 'px';
         }
     }
 
     function onUp() {
         if (resize) {
+            syncCardPos(resize.f, resize.p);
             savePos(win.__cardPos);
             resize = null;
             return;
         }
         if (drag) {
             drag.f.style.zIndex = '100';
+            syncCardPos(drag.f, drag.p);
             savePos(win.__cardPos);
             drag = null;
         }
@@ -1676,12 +1825,9 @@ _card_pos_js = """<script>
         form.style.setProperty('position', 'fixed', 'important');
         form.style.zIndex = '100';
         form.style.top = p.top + 'px';
-        form.style.right = p.right + 'px';
-        form.style.left = 'auto';
+        form.style.right = 'auto';
 
         // Apply card-specific styling (border, padding, width)
-        form.style.setProperty('width', cfg.baseW + 'px', 'important');
-        form.style.setProperty('max-width', cfg.baseW + 'px', 'important');
         form.style.setProperty('height', 'auto', 'important');
         form.style.setProperty('max-height', 'none', 'important');
         form.style.setProperty('overflow', 'visible', 'important');
@@ -1689,12 +1835,19 @@ _card_pos_js = """<script>
         form.style.setProperty('border-radius', cfg.borderRadius, 'important');
         form.style.setProperty('padding', cfg.padding, 'important');
 
-        // Apply zoom scaling (clamped to configured limits)
+        // Apply 2D scaling to whole card while keeping left-anchored positioning
         var appliedZoom = Number(p.zoom);
         if (!isFinite(appliedZoom)) appliedZoom = cfg.defZ;
         appliedZoom = Math.max(cfg.minZ, Math.min(cfg.maxZ, appliedZoom));
         p.zoom = appliedZoom;
-        form.style.zoom = appliedZoom;
+        var w = scaledWidth(cfg, appliedZoom);
+        form.style.setProperty('width', cfg.baseW + 'px', 'important');
+        form.style.setProperty('max-width', cfg.baseW + 'px', 'important');
+        form.style.transformOrigin = 'top left';
+        form.style.transform = 'scale(' + appliedZoom + ')';
+        var vpW = doc.documentElement.clientWidth;
+        p.left = Math.max(0, vpW - (p.right || 0) - w);
+        form.style.left = p.left + 'px';
 
         // Ensure parents don't clip
         var parent = form.parentElement;
@@ -1706,7 +1859,13 @@ _card_pos_js = """<script>
         if (form.querySelector('.card-drag-bar')) return;
 
         var origH = form.querySelector('.card-header-right');
-        var fallbacks = {event_card_output:'EVENT OUTPUT',event_card_input:'EVENT INPUT',input_card:'INPUT CARD',me_sfoc_chart:'M/E SFOC',dg_chart:'D/G CONSUMPTION'};
+        var fallbacks = {
+            event_card_output:'EVENT OUTPUT',
+            event_card_input:'EVENT INPUT',
+            input_card:'INPUT CARD',
+            me_sfoc_chart:'ME SFOC [g/kWh]',
+            dg_chart:'DG [mT/h]'
+        };
         var fallback = fallbacks[key] || key;
         var title = origH ? origH.textContent.trim() : fallback;
         if (origH) origH.style.display = 'none';
@@ -1779,7 +1938,7 @@ _card_pos_js = """<script>
             var r = form.getBoundingClientRect();
             drag = {
                 f: form, p: p, sx: cx, sy: cy,
-                t0: r.top, r0: doc.documentElement.clientWidth - r.right
+                t0: r.top, l0: r.left
             };
             form.style.zIndex = '150';
             e.preventDefault();
@@ -1801,8 +1960,9 @@ _card_pos_js = """<script>
             if (t.indexOf('EVENT OUTPUT') >= 0) { setupCard(forms[i], 'event_card_output', pos); ok++; }
             else if (t.indexOf('EVENT INPUT') >= 0) { setupCard(forms[i], 'event_card_input', pos); ok++; }
             else if (t.indexOf('INPUT CARD') >= 0) { setupCard(forms[i], 'input_card', pos); ok++; }
-            else if (t.indexOf('M/E SFOC') >= 0) { setupCard(forms[i], 'me_sfoc_chart', pos); ok++; }
-            else if (t.indexOf('D/G CONSUMPTION') >= 0) { setupCard(forms[i], 'dg_chart', pos); ok++; }
+            else if (t.indexOf('FUNCTIONS PANEL') >= 0) { setupCard(forms[i], 'functions_panel', pos); ok++; }
+            else if (t.indexOf('ME SFOC CHART') >= 0 || t.indexOf('SFOC [g/kWh]') >= 0 || t.indexOf('ME SFOC [g/kWh]') >= 0) { setupCard(forms[i], 'me_sfoc_chart', pos); ok++; }
+            else if (t.indexOf('DG CONSUMPTION CHART') >= 0 || t.indexOf('DG [mT/h]') >= 0) { setupCard(forms[i], 'dg_chart', pos); ok++; }
         }
         return ok >= 5;
     }
@@ -1843,28 +2003,15 @@ _card_pos_js = _card_pos_js.replace('__INP_PADDING__', _inp_s.get('padding', '8p
 _card_pos_js = _card_pos_js.replace('__INP_TOP__', str(_inp_l['top']))
 _card_pos_js = _card_pos_js.replace('__INP_RIGHT__', str(_inp_l['right']))
 _card_pos_js = _card_pos_js.replace('__INP_LOCKED__', str(_inp_l['locked']).lower())
-# M/E SFOC Chart settings
-_card_pos_js = _card_pos_js.replace('__MSC_BASE_W__', str(_msc_s.get('base_width', 520)))
-_card_pos_js = _card_pos_js.replace('__MSC_MIN_Z__', str(_msc_s.get('min_zoom', 1.0)))
-_card_pos_js = _card_pos_js.replace('__MSC_MAX_Z__', str(_msc_s.get('max_zoom', 1.8)))
-_card_pos_js = _card_pos_js.replace('__MSC_DEF_Z__', str(_msc_s.get('default_zoom', 1.0)))
-_card_pos_js = _card_pos_js.replace('__MSC_BORDER__', _msc_s.get('border', '2px solid #2c3e50'))
-_card_pos_js = _card_pos_js.replace('__MSC_BORDER_RADIUS__', _msc_s.get('border_radius', '6px'))
-_card_pos_js = _card_pos_js.replace('__MSC_PADDING__', _msc_s.get('padding', '4px 6px 6px 6px'))
-_card_pos_js = _card_pos_js.replace('__MSC_TOP__', str(_msc_l['top']))
-_card_pos_js = _card_pos_js.replace('__MSC_RIGHT__', str(_msc_l['right']))
-_card_pos_js = _card_pos_js.replace('__MSC_LOCKED__', str(_msc_l['locked']).lower())
-# D/G Chart settings
-_card_pos_js = _card_pos_js.replace('__DGC_BASE_W__', str(_dgc_s.get('base_width', 520)))
-_card_pos_js = _card_pos_js.replace('__DGC_MIN_Z__', str(_dgc_s.get('min_zoom', 1.0)))
-_card_pos_js = _card_pos_js.replace('__DGC_MAX_Z__', str(_dgc_s.get('max_zoom', 1.8)))
-_card_pos_js = _card_pos_js.replace('__DGC_DEF_Z__', str(_dgc_s.get('default_zoom', 1.0)))
-_card_pos_js = _card_pos_js.replace('__DGC_BORDER__', _dgc_s.get('border', '2px solid #2c3e50'))
-_card_pos_js = _card_pos_js.replace('__DGC_BORDER_RADIUS__', _dgc_s.get('border_radius', '6px'))
-_card_pos_js = _card_pos_js.replace('__DGC_PADDING__', _dgc_s.get('padding', '4px 6px 6px 6px'))
-_card_pos_js = _card_pos_js.replace('__DGC_TOP__', str(_dgc_l['top']))
-_card_pos_js = _card_pos_js.replace('__DGC_RIGHT__', str(_dgc_l['right']))
-_card_pos_js = _card_pos_js.replace('__DGC_LOCKED__', str(_dgc_l['locked']).lower())
+_card_pos_js = _card_pos_js.replace('__FUNC_TOP__', str(_func_l['top']))
+_card_pos_js = _card_pos_js.replace('__FUNC_RIGHT__', str(_func_l['right']))
+_card_pos_js = _card_pos_js.replace('__FUNC_LOCKED__', str(_func_l['locked']).lower())
+_card_pos_js = _card_pos_js.replace('__ME_CH_TOP__', str(_me_chart_l['top']))
+_card_pos_js = _card_pos_js.replace('__ME_CH_RIGHT__', str(_me_chart_l['right']))
+_card_pos_js = _card_pos_js.replace('__ME_CH_LOCKED__', str(_me_chart_l['locked']).lower())
+_card_pos_js = _card_pos_js.replace('__DG_CH_TOP__', str(_dg_chart_l['top']))
+_card_pos_js = _card_pos_js.replace('__DG_CH_RIGHT__', str(_dg_chart_l['right']))
+_card_pos_js = _card_pos_js.replace('__DG_CH_LOCKED__', str(_dg_chart_l['locked']).lower())
 components.html(_card_pos_js, height=0)
 
 # Session state initialization
@@ -1933,6 +2080,139 @@ row2_disabled = (defaults['event'] != "MID")
 _eco_col = st.container()
 _eci_col = st.container()
 _inp_col = st.container()
+_func_col = st.container()
+_me_chart_col = st.container()
+_dg_chart_col = st.container()
+
+_chart_data_version = 'v3_dg_mtph_minutes'
+if st.session_state.get('_chart_data_version') != _chart_data_version:
+    rebuild_chart_data()
+    st.session_state['_chart_data_version'] = _chart_data_version
+
+_chart_points = load_chart_data()
+if not _chart_points:
+    rebuild_chart_data()
+    _chart_points = load_chart_data()
+
+_chart_df = pd.DataFrame(_chart_points) if _chart_points else pd.DataFrame()
+_chart_time_ok = False
+_x_domain_start = None
+_x_domain_end = None
+if not _chart_df.empty and {'id', 'date', 'time'}.issubset(set(_chart_df.columns)):
+    _chart_df = _chart_df.copy()
+    _chart_df['_ts'] = pd.to_datetime(
+        _chart_df['date'].astype(str).str.strip() + ' ' + _chart_df['time'].astype(str).str.strip(),
+        format='%d-%m-%y %H:%M',
+        errors='coerce'
+    )
+    _chart_df = _chart_df.dropna(subset=['_ts']).sort_values('_ts')
+    if not _chart_df.empty:
+        _chart_time_ok = True
+        _x_domain_end = _chart_df['_ts'].max()
+        _x_domain_start = max(_chart_df['_ts'].min(), _x_domain_end - pd.Timedelta(days=7))
+elif not _chart_df.empty and 'id' in _chart_df.columns:
+    _chart_df = _chart_df.sort_values('id')
+
+_chart_plot_df = _chart_df
+if _chart_time_ok and not _chart_df.empty:
+    _max_render_points = 1600
+    if len(_chart_df) > _max_render_points:
+        _step = int(len(_chart_df) / _max_render_points) + 1
+        _chart_plot_df = _chart_df.iloc[::_step].copy()
+
+with _me_chart_col:
+    with st.form("me_sfoc_chart_form"):
+        st.markdown('<div class="chart-card-marker"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-header-right">ME SFOC [g/kWh]</div>', unsafe_allow_html=True)
+        if _chart_time_ok and {'_ts', 'id', 'me_sfoc_calc', 'me_sfoc_cor'}.issubset(set(_chart_plot_df.columns)):
+            _me_chart = _chart_plot_df[['id', '_ts', 'me_sfoc_calc', 'me_sfoc_cor']].copy()
+            for _col in ['me_sfoc_calc', 'me_sfoc_cor']:
+                _me_chart[_col] = pd.to_numeric(_me_chart[_col], errors='coerce')
+                _me_chart.loc[(_me_chart[_col] < 100) | (_me_chart[_col] > 300), _col] = None
+            _me_chart_long = _me_chart.melt(
+                id_vars=['id', '_ts'],
+                value_vars=['me_sfoc_calc', 'me_sfoc_cor'],
+                var_name='series',
+                value_name='value'
+            )
+            _me_chart_long['series'] = _me_chart_long['series'].map({
+                'me_sfoc_calc': 'CALCULATED [g/kWh]',
+                'me_sfoc_cor': 'CORRECTED [g/kWh]'
+            })
+            _me_chart_long = _me_chart_long.dropna(subset=['value'])
+            _me_pan = alt.selection_interval(bind='scales', encodings=['x'])
+            _me_base = alt.Chart(_me_chart_long).encode(
+                x=alt.X(
+                    '_ts:T',
+                    title=None,
+                    axis=alt.Axis(labels=False, ticks=False, domain=False, grid=False),
+                    scale=alt.Scale(domain=[_x_domain_start.isoformat(), _x_domain_end.isoformat()])
+                ),
+                y=alt.Y(
+                    'value:Q',
+                    title=None,
+                    axis=alt.Axis(labels=True, ticks=True, domain=True, grid=True),
+                    scale=alt.Scale(domain=[150, 300])
+                ),
+                color=alt.Color('series:N', legend=None),
+                tooltip=[
+                    alt.Tooltip('id:Q', title='ID'),
+                    alt.Tooltip('_ts:T', title='Time'),
+                    alt.Tooltip('value:Q', title='SFOC', format='.2f')
+                ]
+            )
+            _me_alt = (_me_base.mark_line() + _me_base.mark_point(size=2)).add_params(_me_pan).properties(height=340)
+            st.altair_chart(_me_alt, use_container_width=True)
+        else:
+            st.caption('No chart data yet.')
+        st.form_submit_button('_', disabled=True, type='secondary')
+
+with _dg_chart_col:
+    with st.form("dg_chart_form"):
+        st.markdown('<div class="chart-card-marker"></div>', unsafe_allow_html=True)
+        st.markdown('<div class="card-header-right">DG [mT/h]</div>', unsafe_allow_html=True)
+        if _chart_time_ok and {'_ts', 'id', 'dg_cons_calc', 'dg_cons_cor'}.issubset(set(_chart_plot_df.columns)):
+            _dg_chart = _chart_plot_df[['id', '_ts', 'dg_cons_calc', 'dg_cons_cor']].copy()
+            for _col in ['dg_cons_calc', 'dg_cons_cor']:
+                _dg_chart[_col] = pd.to_numeric(_dg_chart[_col], errors='coerce')
+                _dg_chart.loc[(_dg_chart[_col] <= 0) | (_dg_chart[_col] > 250), _col] = None
+            _dg_chart_long = _dg_chart.melt(
+                id_vars=['id', '_ts'],
+                value_vars=['dg_cons_calc', 'dg_cons_cor'],
+                var_name='series',
+                value_name='value'
+            )
+            _dg_chart_long['series'] = _dg_chart_long['series'].map({
+                'dg_cons_calc': 'CALCULATED [mT/h]',
+                'dg_cons_cor': 'CORRECTED [mT/h]'
+            })
+            _dg_chart_long = _dg_chart_long.dropna(subset=['value'])
+            _dg_pan = alt.selection_interval(bind='scales', encodings=['x'])
+            _dg_base = alt.Chart(_dg_chart_long).encode(
+                x=alt.X(
+                    '_ts:T',
+                    title=None,
+                    axis=alt.Axis(labels=False, ticks=False, domain=False, grid=False),
+                    scale=alt.Scale(domain=[_x_domain_start.isoformat(), _x_domain_end.isoformat()])
+                ),
+                y=alt.Y(
+                    'value:Q',
+                    title=None,
+                    axis=alt.Axis(labels=True, ticks=True, domain=True, grid=True),
+                    scale=alt.Scale(domain=[0, 0.2])
+                ),
+                color=alt.Color('series:N', legend=None),
+                tooltip=[
+                    alt.Tooltip('id:Q', title='ID'),
+                    alt.Tooltip('_ts:T', title='Time'),
+                    alt.Tooltip('value:Q', title='mT/h', format='.3f')
+                ]
+            )
+            _dg_alt = (_dg_base.mark_line() + _dg_base.mark_point(size=3)).add_params(_dg_pan).properties(height=340)
+            st.altair_chart(_dg_alt, use_container_width=True)
+        else:
+            st.caption('No chart data yet.')
+        st.form_submit_button('_', disabled=True, type='secondary')
 
 # Helper: format time input
 def _fmt_time(raw):
@@ -2090,10 +2370,10 @@ with _eco_col:
 
         _sec2_rows = ''
         for _ll, _lk, _ld, _rl, _rk2, _rd in [
-            ('AVG PWR', 'avg_pwr', 2, 'M/E SYS', 'me_sys_acc_cons', 2),
-            ('AVG RPM', 'avg_rpm', 2, 'M/E CYL', 'me_cyl_acc_cons', 2),
-            ('TTL PWR', 'ttl_pwr', 2, 'D/G SYS', 'dg_sys_acc_cons', 2),
-            ('TTL RPM', 'ttl_rpm', 2, '',         None,              None),
+            ('AVG PWR [kW]', 'avg_pwr', 2, 'M/E SYS', 'me_sys_acc_cons', 2),
+            ('AVG RPM [rpm]', 'avg_rpm', 2, 'M/E CYL', 'me_cyl_acc_cons', 2),
+            ('TTL PWR [kWh]', 'ttl_pwr', 2, 'D/G SYS', 'dg_sys_acc_cons', 2),
+            ('TTL RPM [rev]', 'ttl_rpm', 2, '',         None,              None),
         ]:
             _sec2_rows += (
                 f'<tr><td class="el">{_ll}</td><td class="ev">{_ov(_lk, _ld)}</td>'
@@ -2222,6 +2502,12 @@ with _eci_col:
 
     # Event Card save handler
     if c2_submitted and _eid and _eid > 1:
+        # DEBUG: log raw _fuel_vals to file
+        import json as _dbg_json
+        with open('/tmp/forobs_debug.log', 'a') as _df:
+            _df.write(f"\n=== SAVE EVENT CARD for ID {_eid} ===\n")
+            _df.write(f"_fuel_vals = {_dbg_json.dumps({k: repr(v) for k,v in _fuel_vals.items()})}\n")
+            _df.write(f"_corr_vals = {_dbg_json.dumps({k: repr(v) for k,v in _corr_vals.items()})}\n")
         c2_data = {
             'me_fo_set':        str(_fuel_vals.get('me_fo_set', 'HFO')),
             'dg_fo_set':        str(_fuel_vals.get('dg_fo_set', 'HFO')),
@@ -2239,8 +2525,22 @@ with _eci_col:
             'me_cyl_bnkr':      safe_float(_fuel_vals.get('me_cyl_bnkr', 0)),
             'dg_sys_bnkr':      safe_float(_fuel_vals.get('dg_sys_bnkr', 0)),
         }
+        # DEBUG: log c2_data
+        with open('/tmp/forobs_debug.log', 'a') as _df:
+            _df.write(f"c2_data = {_dbg_json.dumps({k: repr(v) for k,v in c2_data.items()})}\n")
         update_event(_eid, c2_data)
-        recalculate_chain(_eid)
+        with st.spinner(f"Recalculating chain from ID {_eid}…"):
+            recalculate_chain(_eid)
+        try:
+            rebuild_chart_data()
+        except Exception:
+            pass
+        # DEBUG: verify DB after save
+        with open('/tmp/forobs_debug.log', 'a') as _df:
+            _dbg_conn = get_connection()
+            _dbg_row = _dbg_conn.execute(f"SELECT hfo_bnkr, do_bnkr, me_sys_bnkr FROM events WHERE id = {_eid}").fetchone()
+            _df.write(f"DB after save: hfo_bnkr={_dbg_row[0]}, do_bnkr={_dbg_row[1]}, me_sys_bnkr={_dbg_row[2]}\n")
+            _dbg_conn.close()
         st.success(f"Event Card saved for Event #{_eid}!")
         st.rerun()
 
@@ -2439,7 +2739,12 @@ with _inp_col:
             }
             if st.session_state.editing_id:
                 update_event(st.session_state.editing_id, event_data)
-                recalculate_chain(st.session_state.editing_id)
+                with st.spinner(f"Recalculating chain from ID {st.session_state.editing_id}…"):
+                    recalculate_chain(st.session_state.editing_id)
+                try:
+                    rebuild_chart_data()
+                except Exception:
+                    pass
                 st.success(f"Event #{st.session_state.editing_id} updated!")
             else:
                 insert_event(event_data)
@@ -2448,6 +2753,10 @@ with _inp_col:
                 conn_tmp.close()
                 if new_id and new_id > 1:
                     calculate_event(new_id)
+                try:
+                    rebuild_chart_data()
+                except Exception:
+                    pass
                 st.success("New event saved!")
             st.session_state.editing_id = None
             st.session_state.new_entry_mode = False
@@ -2458,6 +2767,17 @@ with _inp_col:
             st.session_state.confirm_delete = True
         else:
             st.warning("No event selected to delete. Click an event ID in the logbook first.")
+
+with _func_col:
+    with st.form("functions_panel_form"):
+        st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
+        _fp_ok, _fp_url = _ensure_elcalc_server()
+        if _fp_ok:
+            st.link_button("Fuel plan", _fp_url, use_container_width=True)
+        else:
+            st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
+            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+        st.form_submit_button("_", disabled=True, type="secondary")
 
     if st.session_state.confirm_delete and st.session_state.editing_id:
         del_id = st.session_state.editing_id
@@ -2480,113 +2800,11 @@ with _inp_col:
                 st.session_state.confirm_delete = False
                 st.rerun()
 
-# ═══════════════════════════════════════════════════════
-# ── SFOC CHART CARDS (floating / draggable) ───────────
-# ═══════════════════════════════════════════════════════
-import plotly.graph_objects as go
-
-# Build chart data if it doesn't exist yet
-if not os.path.exists(CHART_DATA_PATH):
-    rebuild_chart_data()
-
-_chart_points = load_chart_data()
-
-# Prepare filtered chart arrays
-_me_ids, _me_calc, _me_cor, _me_dates, _me_times = [], [], [], [], []
-_dg_ids, _dg_calc, _dg_cor, _dg_dates, _dg_times = [], [], [], [], []
-if _chart_points:
-    for _cp in _chart_points:
-        if _cp.get('me_sfoc_calc', 0) > 0:
-            _me_ids.append(_cp['id']); _me_calc.append(_cp['me_sfoc_calc'])
-            _me_cor.append(_cp.get('me_sfoc_cor', 0))
-            _me_dates.append(_cp.get('date', '')); _me_times.append(_cp.get('time', ''))
-        if _cp.get('dg_cons_calc', 0) > 0:
-            _dg_ids.append(_cp['id']); _dg_calc.append(_cp['dg_cons_calc'])
-            _dg_cor.append(_cp.get('dg_cons_cor', 0))
-            _dg_dates.append(_cp.get('date', '')); _dg_times.append(_cp.get('time', ''))
-
-_chart_w = int(_msc_s.get('base_width', 520))
-
-# ── M/E SFOC Chart Card ──
-with st.form("me_sfoc_chart_form"):
-    st.markdown('<div class="chart-card-marker"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="card-header-right">M/E SFOC [g/kWh]</div>', unsafe_allow_html=True)
-    if _me_ids:
-        _me_hover_calc = [f"ID:{_me_ids[i]}<br>{_me_dates[i]} {_me_times[i]}<br>SFOC: {_me_calc[i]} g/kWh" for i in range(len(_me_ids))]
-        _me_hover_cor = [f"ID:{_me_ids[i]}<br>{_me_dates[i]} {_me_times[i]}<br>SFOC: {_me_cor[i]} g/kWh" for i in range(len(_me_ids))]
-        _fig_me = go.Figure()
-        _fig_me.add_trace(go.Scatter(
-            x=list(range(len(_me_ids))), y=_me_calc,
-            mode='lines+markers', name='Calculated',
-            line=dict(color='#8B0000', width=1.5),
-            marker=dict(size=3, color='#8B0000'),
-            hovertext=_me_hover_calc, hoverinfo='text',
-        ))
-        if any(v > 0 for v in _me_cor):
-            _fig_me.add_trace(go.Scatter(
-                x=list(range(len(_me_ids))), y=_me_cor,
-                mode='lines+markers', name='Corrected',
-                line=dict(color='#FF4444', width=1.5),
-                marker=dict(size=3, color='#FF4444'),
-                hovertext=_me_hover_cor, hoverinfo='text',
-            ))
-        _fig_me.update_layout(
-            title=dict(text='M/E SFOC [g/kWh]', font=dict(size=11)),
-            height=200,
-            margin=dict(l=40, r=10, t=30, b=25),
-            xaxis=dict(showticklabels=False, showgrid=False),
-            yaxis=dict(tickfont=dict(size=9), gridcolor='#eee', range=[0, 300], fixedrange=True),
-            legend=dict(font=dict(size=8), orientation='h', y=1.12, x=0.5, xanchor='center'),
-            plot_bgcolor='#fafafa', paper_bgcolor='white', hovermode='closest',
-            dragmode='pan',
-        )
-        st.plotly_chart(_fig_me, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': 'h'})
-    else:
-        st.caption("No M/E SFOC data yet")
-    st.form_submit_button("_", disabled=True, type="secondary")
-
-# ── D/G Consumption Chart Card ──
-with st.form("dg_chart_form"):
-    st.markdown('<div class="chart-card-marker"></div>', unsafe_allow_html=True)
-    st.markdown('<div class="card-header-right">D/G CONSUMPTION [g/hr]</div>', unsafe_allow_html=True)
-    if _dg_ids:
-        _dg_hover_calc = [f"ID:{_dg_ids[i]}<br>{_dg_dates[i]} {_dg_times[i]}<br>Cons: {_dg_calc[i]} g/hr" for i in range(len(_dg_ids))]
-        _dg_hover_cor = [f"ID:{_dg_ids[i]}<br>{_dg_dates[i]} {_dg_times[i]}<br>Cons: {_dg_cor[i]} g/hr" for i in range(len(_dg_ids))]
-        _fig_dg = go.Figure()
-        _fig_dg.add_trace(go.Scatter(
-            x=list(range(len(_dg_ids))), y=_dg_calc,
-            mode='lines+markers', name='Calculated',
-            line=dict(color='#8B0000', width=1.5),
-            marker=dict(size=3, color='#8B0000'),
-            hovertext=_dg_hover_calc, hoverinfo='text',
-        ))
-        if any(v > 0 for v in _dg_cor):
-            _fig_dg.add_trace(go.Scatter(
-                x=list(range(len(_dg_ids))), y=_dg_cor,
-                mode='lines+markers', name='Corrected',
-                line=dict(color='#FF4444', width=1.5),
-                marker=dict(size=3, color='#FF4444'),
-                hovertext=_dg_hover_cor, hoverinfo='text',
-            ))
-        _fig_dg.update_layout(
-            title=dict(text='D/G Consumption [g/hr]', font=dict(size=11)),
-            height=200,
-            margin=dict(l=40, r=10, t=30, b=25),
-            xaxis=dict(showticklabels=False, showgrid=False),
-            yaxis=dict(tickfont=dict(size=9), gridcolor='#eee', range=[0, 250], fixedrange=True),
-            legend=dict(font=dict(size=8), orientation='h', y=1.12, x=0.5, xanchor='center'),
-            plot_bgcolor='#fafafa', paper_bgcolor='white', hovermode='closest',
-            dragmode='pan',
-        )
-        st.plotly_chart(_fig_dg, use_container_width=True, config={'displayModeBar': False, 'scrollZoom': 'h'})
-    else:
-        st.caption("No D/G consumption data yet")
-    st.form_submit_button("_", disabled=True, type="secondary")
-
 # ============ LEFT BAR (Sidebar) - Events Logbook ============
 with st.sidebar:
-    st.markdown('<div style="font-size:13px;font-weight:700;color:#2c3e50;padding:0 0 2px 0;margin:-1rem 0 0 0;">\U0001F4D6 Event Logbook</div>', unsafe_allow_html=True)
     events_df = fetch_all_events_stable()
+    _total_log_count = len(events_df) if not events_df.empty else 0
+    st.markdown(f'<div style="font-size:14px;font-weight:700;color:#2c3e50;padding:0 0 2px 0;margin:-1rem 0 0 0;">\U0001F4D6 Event Logbook ({_total_log_count} ID\'s)</div>', unsafe_allow_html=True)
     
     if not events_df.empty:
         col_rename = {c: c.upper() for c in events_df.columns}
@@ -2596,6 +2814,11 @@ with st.sidebar:
             st.session_state['_logbook_selected_columns'] = list(display_df.columns)
         if '_logbook_pending_columns' not in st.session_state:
             st.session_state['_logbook_pending_columns'] = list(st.session_state['_logbook_selected_columns'])
+        if '_logbook_pinned_columns' not in st.session_state:
+            _pin_defaults = ['ID', 'DATE', 'TIME', 'EVENT', 'PLACE', 'ST_TIME']
+            st.session_state['_logbook_pinned_columns'] = [c for c in _pin_defaults if c in display_df.columns]
+        if '_logbook_pending_pins' not in st.session_state:
+            st.session_state['_logbook_pending_pins'] = list(st.session_state['_logbook_pinned_columns'])
 
         if 'ID' not in st.session_state['_logbook_selected_columns']:
             st.session_state['_logbook_selected_columns'] = ['ID'] + [
@@ -2618,18 +2841,91 @@ with st.sidebar:
         table_df = display_df[selected_cols].copy()
         total_rows = len(table_df)
 
-        # Read window params from session state (widgets rendered below dataframe)
-        if '_logbook_window_size' not in st.session_state:
-            st.session_state['_logbook_window_size'] = 100
-        if '_logbook_window_start' not in st.session_state:
-            st.session_state['_logbook_window_start'] = 0
-
-        window_size = max(1, int(st.session_state['_logbook_window_size']))
+        # Fixed window of 51 rows, FIND navigates
+        window_size = 51
         max_start = max(0, total_rows - window_size)
-        if st.session_state['_logbook_window_start'] > max_start:
-            st.session_state['_logbook_window_start'] = max_start
+        if '_lb_start' not in st.session_state:
+            st.session_state['_lb_start'] = 0
+        if st.session_state['_lb_start'] > max_start:
+            st.session_state['_lb_start'] = max_start
+        if st.session_state['_lb_start'] < 0:
+            st.session_state['_lb_start'] = 0
 
-        start_idx = int(st.session_state['_logbook_window_start'])
+        # ── Controls row: New Entry | Columns | Find ──
+        _sb_c1, _sb_c2, _sb_c3, _sb_c4 = st.columns([0.8, 0.8, 2.4, 0.5])
+        with _sb_c1:
+            if st.button("\u2795 New", use_container_width=True, type="secondary"):
+                st.session_state.editing_id = None
+                st.session_state.new_entry_mode = True
+                st.session_state.confirm_delete = False
+                st.rerun()
+        with _sb_c2:
+            with st.popover("\U0001F4CB Col", use_container_width=True):
+                st.caption("Select columns to load in logbook view")
+                pending = st.multiselect(
+                    "Columns",
+                    options=list(display_df.columns),
+                    default=[c for c in st.session_state['_logbook_pending_columns'] if c in display_df.columns],
+                    key="_logbook_pending_columns_widget",
+                )
+                if 'ID' not in pending:
+                    pending = ['ID'] + pending
+                st.caption("Pinned columns (stable)")
+                pending_pins = st.multiselect(
+                    "Pinned",
+                    options=pending,
+                    default=[c for c in st.session_state['_logbook_pending_pins'] if c in pending],
+                    key="_logbook_pending_pins_widget",
+                )
+                if 'ID' not in pending_pins:
+                    pending_pins = ['ID'] + pending_pins
+                cc1, cc2 = st.columns(2)
+                with cc1:
+                    if st.button("OK", use_container_width=True, key="_logbook_cols_ok"):
+                        st.session_state['_logbook_selected_columns'] = pending
+                        st.session_state['_logbook_pending_columns'] = pending
+                        st.session_state['_logbook_pinned_columns'] = pending_pins
+                        st.session_state['_logbook_pending_pins'] = pending_pins
+                        st.rerun()
+                with cc2:
+                    if st.button("CANCEL", use_container_width=True, key="_logbook_cols_cancel"):
+                        st.session_state['_logbook_pending_columns'] = list(st.session_state['_logbook_selected_columns'])
+                        st.session_state['_logbook_pending_pins'] = list(st.session_state['_logbook_pinned_columns'])
+                        st.rerun()
+        with _sb_c3:
+            _find_val = st.text_input("ID or Date", key="_lb_find_val", placeholder="ID or dd/mm/yyyy", label_visibility="collapsed")
+        with _sb_c4:
+            _find_clicked = st.button("\U0001F50D", use_container_width=True, key="_lb_find_btn")
+
+        # ── FIND processing ──
+        if _find_clicked and _find_val and _find_val.strip():
+            import re as _re
+            _fv = _find_val.strip()
+            _found_pos = None
+            if _fv.isdigit():
+                _target_id = int(_fv)
+                _id_vals = table_df['ID'].values
+                _positions = [i for i, v in enumerate(_id_vals) if int(v) == _target_id]
+                if _positions:
+                    _found_pos = _positions[0]
+            else:
+                _date_match = _re.match(r'^(\d{1,2})[/\-.](\d{1,2})[/\-.](.+)$', _fv)
+                if _date_match and 'DATE' in table_df.columns:
+                    _dd, _mm, _yy = _date_match.groups()
+                    if len(_yy) == 4:
+                        _yy = _yy[2:]
+                    _db_date = f"{_dd.zfill(2)}-{_mm.zfill(2)}-{_yy.zfill(2)}"
+                    _date_vals = table_df['DATE'].values.astype(str)
+                    _positions = [i for i, v in enumerate(_date_vals) if v.strip() == _db_date]
+                    if _positions:
+                        _found_pos = (_positions[0] + _positions[-1]) // 2
+            if _found_pos is not None:
+                _new_start = _found_pos - 25
+                _new_start = max(0, min(_new_start, max_start))
+                st.session_state['_lb_start'] = _new_start
+                st.rerun()
+
+        start_idx = int(st.session_state['_lb_start'])
         end_idx = min(total_rows, start_idx + window_size)
         window_df = table_df.iloc[start_idx:end_idx].copy()
         
@@ -2688,22 +2984,35 @@ with st.sidebar:
                 return ['background-color: #efebe9'] * len(col)
             return [''] * len(col)
         
+        _pinned_cols = [
+            c for c in st.session_state.get('_logbook_pinned_columns', ['ID', 'DATE', 'TIME', 'EVENT', 'PLACE', 'ST_TIME'])
+            if c in window_df.columns
+        ]
+        if 'ID' not in _pinned_cols and 'ID' in window_df.columns:
+            _pinned_cols = ['ID'] + _pinned_cols
+
+        _unpinned_cols = [c for c in window_df.columns if c not in _pinned_cols]
+        _ordered_cols = _pinned_cols + _unpinned_cols
+        window_df = window_df[_ordered_cols]
+
         styled_df = window_df.style.apply(color_columns).format(
             {col: '{:.2f}' for col in window_df.select_dtypes(include='number').columns if col != 'ID'},
             na_rep=''
         )
+
+        _col_cfg = {}
+        for _col in window_df.columns:
+            if _col == 'ID':
+                _col_cfg[_col] = st.column_config.NumberColumn("ID", width=50, pinned=(_col in _pinned_cols))
+            else:
+                _col_cfg[_col] = st.column_config.TextColumn(_col, pinned=(_col in _pinned_cols))
+
         selection = st.dataframe(
             styled_df,
             hide_index=True,
             use_container_width=True,
             height=420,
-            column_config={
-                "ID": st.column_config.NumberColumn("ID", width=50, pinned=True),
-                "DATE": st.column_config.TextColumn("DATE", pinned=True),
-                "TIME": st.column_config.TextColumn("TIME", pinned=True),
-                "EVENT": st.column_config.TextColumn("EVENT", pinned=True),
-                "PLACE": st.column_config.TextColumn("PLACE", pinned=True),
-            },
+            column_config=_col_cfg,
             on_select="rerun",
             selection_mode="single-row",
             key="events_table",
@@ -2717,57 +3026,7 @@ with st.sidebar:
                 st.session_state.confirm_delete = False
                 st.rerun()
         
-        # ── Controls row: New Entry | Columns | Window | Scroll ── all same width
-        _sb_c1, _sb_c2, _sb_c3, _sb_c4 = st.columns([1, 1, 1, 1])
-        with _sb_c1:
-            if st.button("\u2795 New Entry", use_container_width=True, type="secondary"):
-                st.session_state.editing_id = None
-                st.session_state.new_entry_mode = True
-                st.session_state.confirm_delete = False
-                st.rerun()
-        with _sb_c2:
-            with st.popover("\U0001F4CB Columns", use_container_width=True):
-                st.caption("Select columns to load in logbook view")
-                pending = st.multiselect(
-                    "Columns",
-                    options=list(display_df.columns),
-                    default=[c for c in st.session_state['_logbook_pending_columns'] if c in display_df.columns],
-                    key="_logbook_pending_columns_widget",
-                )
-                if 'ID' not in pending:
-                    pending = ['ID'] + pending
-
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    if st.button("OK", use_container_width=True, key="_logbook_cols_ok"):
-                        st.session_state['_logbook_selected_columns'] = pending
-                        st.session_state['_logbook_pending_columns'] = pending
-                        st.rerun()
-                with cc2:
-                    if st.button("CANCEL", use_container_width=True, key="_logbook_cols_cancel"):
-                        st.session_state['_logbook_pending_columns'] = list(st.session_state['_logbook_selected_columns'])
-                        st.rerun()
-        with _sb_c3:
-            st.session_state['_logbook_window_size'] = st.selectbox(
-                "Window",
-                options=[50, 100, 200, 500],
-                index=[50, 100, 200, 500].index(st.session_state.get('_logbook_window_size', 100)) if st.session_state.get('_logbook_window_size', 100) in [50, 100, 200, 500] else 1,
-                key="_logbook_window_size_widget",
-                label_visibility='collapsed',
-            )
-        with _sb_c4:
-            if max_start > 0:
-                st.session_state['_logbook_window_start'] = st.slider(
-                    "Scroll",
-                    min_value=0,
-                    max_value=max_start,
-                    value=int(st.session_state['_logbook_window_start']),
-                    step=max(1, window_size // 4),
-                    key="_logbook_window_start_widget",
-                    label_visibility='collapsed',
-                )
-            else:
-                st.session_state['_logbook_window_start'] = 0
+        # (controls moved above dataframe)
 
         # ═══════════════════════════════════════════════════
         # ── EVENT CALCULATOR ──────────────────────────────
@@ -2846,6 +3105,18 @@ with st.sidebar:
             total_min = max(0, int(total_min))
             return f"{total_min // 60:02d}:{total_min % 60:02d}"
 
+        def _ec_parse_dt(row):
+            try:
+                _d = datetime.strptime(str(row.get('date', '') or ''), '%d-%m-%y')
+            except Exception:
+                return None
+            try:
+                _t = str(row.get('time', '00:00') or '00:00')
+                _hh, _mm = _t.split(':')
+                return _d.replace(hour=int(_hh), minute=int(_mm))
+            except Exception:
+                return _d
+
         def _ec_fmt(val, decimals=2):
             if val is None or val == 0 or val == 0.0:
                 return '--'
@@ -2865,32 +3136,105 @@ with st.sidebar:
             range_df = _ec_fetch_range(_ec_sid, _ec_eid)
 
             if ev_start and ev_end and not range_df.empty:
-                # ── TTL TIME ──
-                _ttl_min = 0
-                for _, r in range_df.iterrows():
-                    _ttl_min += _ec_hhmm_to_min(r.get('st_time'))
+                # For runtime-based metrics, exclude the newest event in range.
+                # Example: for 1→100, duration fields from ID 100 are not counted.
+                calc_df = range_df.iloc[:-1].copy() if len(range_df) > 1 else range_df.iloc[0:0].copy()
+
+                # ── TTL TIME (end datetime - start datetime) ──
+                _st_dt = _ec_parse_dt(ev_start)
+                _en_dt = _ec_parse_dt(ev_end)
+                if _st_dt and _en_dt:
+                    _ttl_min = max(0, int((_en_dt - _st_dt).total_seconds() / 60))
+                else:
+                    _ttl_min = sum(_ec_hhmm_to_min(r.get('st_time')) for _, r in calc_df.iterrows())
                 _ttl_time_s = _ec_min_to_hhmm(_ttl_min)
 
-                # ── TOTAL RHS per device ──
-                _rhs = {}
-                for dev, key in [('ME', 'me_diff'), ('DG1', 'dg1_diff'), ('DG2', 'dg2_diff'),
-                                  ('DG3', 'dg3_diff'), ('BLR', 'blr_diff')]:
-                    total = 0
-                    for _, r in range_df.iterrows():
-                        total += _ec_hhmm_to_min(r.get(key))
-                    _rhs[dev] = total
-                _rhs['DGs'] = _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3']
+                # ── TOTAL RHS per device (decimal counters: end - start) ──
+                _rhs = {
+                    'ME': round(max(_ec_safe_float(ev_end.get('me_hrs')) - _ec_safe_float(ev_start.get('me_hrs')), 0), 2),
+                    'DG1': round(max(_ec_safe_float(ev_end.get('dg1_hrs')) - _ec_safe_float(ev_start.get('dg1_hrs')), 0), 2),
+                    'DG2': round(max(_ec_safe_float(ev_end.get('dg2_hrs')) - _ec_safe_float(ev_start.get('dg2_hrs')), 0), 2),
+                    'DG3': round(max(_ec_safe_float(ev_end.get('dg3_hrs')) - _ec_safe_float(ev_start.get('dg3_hrs')), 0), 2),
+                    'BLR': round(max(_ec_safe_float(ev_end.get('boiler_hrs')) - _ec_safe_float(ev_start.get('boiler_hrs')), 0), 2),
+                }
+                _rhs['DGs'] = round(_rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'], 2)
 
-                # ── FUEL CONSUMPTION (ROB diff + bunkering) ──
+                # ── FUEL CONSUMPTION (ROB diff + bunkering in range) ──
                 _hfo_start = _ec_safe_float(ev_start.get('hfo_rob'))
                 _hfo_end = _ec_safe_float(ev_end.get('hfo_rob'))
                 _do_start = _ec_safe_float(ev_start.get('do_rob'))
                 _do_end = _ec_safe_float(ev_end.get('do_rob'))
-                # Sum bunkering in range
                 _hfo_bnkr = sum(_ec_safe_float(r.get('hfo_bnkr')) for _, r in range_df.iterrows())
                 _do_bnkr = sum(_ec_safe_float(r.get('do_bnkr')) for _, r in range_df.iterrows())
                 _hfo_cons = round(_hfo_start - _hfo_end + _hfo_bnkr, 2)
                 _do_cons = round(_do_start - _do_end + _do_bnkr, 2)
+
+                # Per-device fuel split for display (ME / DG1-3 / BLR)
+                _fuel_df = range_df.iloc[1:].copy() if len(range_df) > 1 else range_df.iloc[0:0].copy()
+                _me_hfo_raw = sum(_ec_safe_float(r.get('me_hfo_acc_cons')) for _, r in _fuel_df.iterrows())
+                _me_do_raw = sum(_ec_safe_float(r.get('me_do_acc_cons')) for _, r in _fuel_df.iterrows())
+                _dg_hfo_raw_total = sum(_ec_safe_float(r.get('dg_hfo_acc_cons')) for _, r in _fuel_df.iterrows())
+                _dg_do_raw_total = sum(_ec_safe_float(r.get('dg_do_acc_cons')) for _, r in _fuel_df.iterrows())
+                _blr_hfo_raw = sum(_ec_safe_float(r.get('blr_hfo_acc_cons')) for _, r in _fuel_df.iterrows())
+                _blr_do_raw = sum(_ec_safe_float(r.get('blr_do_acc_cons')) for _, r in _fuel_df.iterrows())
+
+                _dg_rhs_total = _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3']
+                if _dg_rhs_total > 0:
+                    _dg1_hfo_raw = _dg_hfo_raw_total * _rhs['DG1'] / _dg_rhs_total
+                    _dg2_hfo_raw = _dg_hfo_raw_total * _rhs['DG2'] / _dg_rhs_total
+                    _dg3_hfo_raw = _dg_hfo_raw_total * _rhs['DG3'] / _dg_rhs_total
+                    _dg1_do_raw = _dg_do_raw_total * _rhs['DG1'] / _dg_rhs_total
+                    _dg2_do_raw = _dg_do_raw_total * _rhs['DG2'] / _dg_rhs_total
+                    _dg3_do_raw = _dg_do_raw_total * _rhs['DG3'] / _dg_rhs_total
+                else:
+                    _dg1_hfo_raw = _dg2_hfo_raw = _dg3_hfo_raw = 0.0
+                    _dg1_do_raw = _dg2_do_raw = _dg3_do_raw = 0.0
+
+                _hfo_raw_total = _me_hfo_raw + _dg1_hfo_raw + _dg2_hfo_raw + _dg3_hfo_raw + _blr_hfo_raw
+                _do_raw_total = _me_do_raw + _dg1_do_raw + _dg2_do_raw + _dg3_do_raw + _blr_do_raw
+
+                if _hfo_raw_total > 0 and _hfo_cons > 0:
+                    _hfo_scale = _hfo_cons / _hfo_raw_total
+                    _me_hfo = round(_me_hfo_raw * _hfo_scale, 2)
+                    _dg1_hfo = round(_dg1_hfo_raw * _hfo_scale, 2)
+                    _dg2_hfo = round(_dg2_hfo_raw * _hfo_scale, 2)
+                    _dg3_hfo = round(_dg3_hfo_raw * _hfo_scale, 2)
+                    _blr_hfo = round(_blr_hfo_raw * _hfo_scale, 2)
+                elif _hfo_cons > 0:
+                    _sum_rhs_all = _rhs['ME'] + _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'] + _rhs['BLR']
+                    if _sum_rhs_all > 0:
+                        _me_hfo = round(_hfo_cons * _rhs['ME'] / _sum_rhs_all, 2)
+                        _dg1_hfo = round(_hfo_cons * _rhs['DG1'] / _sum_rhs_all, 2)
+                        _dg2_hfo = round(_hfo_cons * _rhs['DG2'] / _sum_rhs_all, 2)
+                        _dg3_hfo = round(_hfo_cons * _rhs['DG3'] / _sum_rhs_all, 2)
+                        _blr_hfo = round(_hfo_cons * _rhs['BLR'] / _sum_rhs_all, 2)
+                    else:
+                        _me_hfo = _dg1_hfo = _dg2_hfo = _dg3_hfo = _blr_hfo = 0.0
+                else:
+                    _me_hfo = _dg1_hfo = _dg2_hfo = _dg3_hfo = _blr_hfo = 0.0
+
+                if _do_raw_total > 0 and _do_cons > 0:
+                    _do_scale = _do_cons / _do_raw_total
+                    _me_do = round(_me_do_raw * _do_scale, 2)
+                    _dg1_do = round(_dg1_do_raw * _do_scale, 2)
+                    _dg2_do = round(_dg2_do_raw * _do_scale, 2)
+                    _dg3_do = round(_dg3_do_raw * _do_scale, 2)
+                    _blr_do = round(_blr_do_raw * _do_scale, 2)
+                elif _do_cons > 0:
+                    _sum_rhs_all = _rhs['ME'] + _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'] + _rhs['BLR']
+                    if _sum_rhs_all > 0:
+                        _me_do = round(_do_cons * _rhs['ME'] / _sum_rhs_all, 2)
+                        _dg1_do = round(_do_cons * _rhs['DG1'] / _sum_rhs_all, 2)
+                        _dg2_do = round(_do_cons * _rhs['DG2'] / _sum_rhs_all, 2)
+                        _dg3_do = round(_do_cons * _rhs['DG3'] / _sum_rhs_all, 2)
+                        _blr_do = round(_do_cons * _rhs['BLR'] / _sum_rhs_all, 2)
+                    else:
+                        _me_do = _dg1_do = _dg2_do = _dg3_do = _blr_do = 0.0
+                else:
+                    _me_do = _dg1_do = _dg2_do = _dg3_do = _blr_do = 0.0
+
+                _dg_hfo_disp = round(_dg1_hfo + _dg2_hfo + _dg3_hfo, 2)
+                _dg_do_disp = round(_dg1_do + _dg2_do + _dg3_do, 2)
 
                 # ── OIL CONSUMPTION (ROB diff + bunkering) ──
                 _oil = {}
@@ -2911,6 +3255,12 @@ with st.sidebar:
                     'dg_sys': _ec_safe_float(ev_end.get('dg_sys_rob')),
                 }
 
+                _fuel_rob = {
+                    'hfo': _hfo_end,
+                    'do': _do_end,
+                    'ttl': round(_hfo_end + _do_end, 2),
+                }
+
                 # ── SCRUBBER RATIO (average sox_co2 in range) ──
                 _sox_vals = [_ec_safe_float(r.get('sox_co2')) for _, r in range_df.iterrows()]
                 _sox_nonzero = [v for v in _sox_vals if v > 0]
@@ -2921,15 +3271,12 @@ with st.sidebar:
                 for dg, k in [('DG1', 'dg1_mwh'), ('DG2', 'dg2_mwh'), ('DG3', 'dg3_mwh')]:
                     _dg_mwh[dg] = round(_ec_safe_float(ev_end.get(k)) - _ec_safe_float(ev_start.get(k)), 2)
 
-                # ── AVG PWR / AVG RPM / TTL PWR / TTL RPM ──
-                _pwr_vals = [_ec_safe_float(r.get('avg_pwr')) for _, r in range_df.iterrows()]
-                _rpm_vals = [_ec_safe_float(r.get('avg_rpm')) for _, r in range_df.iterrows()]
-                _pwr_nz = [v for v in _pwr_vals if v > 0]
-                _rpm_nz = [v for v in _rpm_vals if v > 0]
-                _avg_pwr = round(sum(_pwr_nz) / len(_pwr_nz), 2) if _pwr_nz else 0
-                _avg_rpm = round(sum(_rpm_nz) / len(_rpm_nz), 2) if _rpm_nz else 0
-                _ttl_pwr = round(sum(_ec_safe_float(r.get('ttl_pwr')) for _, r in range_df.iterrows()), 2)
-                _ttl_rpm = round(sum(_ec_safe_float(r.get('ttl_rpm')) for _, r in range_df.iterrows()), 2)
+                # ── AVG PWR / AVG RPM / TTL PWR / TTL RPM (end - start) ──
+                _ttl_pwr = round(max(_ec_safe_float(ev_end.get('me_pwrmtr')) - _ec_safe_float(ev_start.get('me_pwrmtr')), 0), 2)
+                _ttl_rpm = round(max(_ec_safe_float(ev_end.get('me_rev_c')) - _ec_safe_float(ev_start.get('me_rev_c')), 0), 2)
+                _me_rhs_dec = _rhs['ME']
+                _avg_pwr = round(_ttl_pwr / _me_rhs_dec, 2) if _me_rhs_dec > 0 else 0.0
+                _avg_rpm = round(_ttl_rpm / (_me_rhs_dec * 60.0), 2) if _me_rhs_dec > 0 else 0.0
 
                 # ── SCRUBBER OL / CL tracking ──
                 def _ec_scrubber_tracking(sid, eid, range_df):
@@ -2959,13 +3306,19 @@ with st.sidebar:
                                 initial_mode = 'OL'  # CL→OL = scrubber switched to open
                             break
 
-                    # Walk through range events and track mode switches
-                    # Each event has st_time (duration from prev event)
+                    # Walk through range events and track mode switches using
+                    # actual datetime intervals between consecutive events.
                     current_mode = initial_mode
                     ol_min = 0
                     cl_min = 0
-                    for _, r in range_df.iterrows():
-                        dur = _ec_hhmm_to_min(r.get('st_time'))
+                    _rows = [r for _, r in range_df.iterrows()]
+                    for i, r in enumerate(_rows[:-1]):
+                        _dt_cur = _ec_parse_dt(r)
+                        _dt_nxt = _ec_parse_dt(_rows[i + 1])
+                        if _dt_cur and _dt_nxt:
+                            dur = max(0, int((_dt_nxt - _dt_cur).total_seconds() / 60))
+                        else:
+                            dur = _ec_hhmm_to_min(r.get('st_time'))
                         # This event's duration was spent in the CURRENT mode
                         if current_mode == 'OL':
                             ol_min += dur
@@ -3002,29 +3355,29 @@ with st.sidebar:
                 _ect_html += f'''
                 <table class="ect2">
                 <tr><td class="sh" colspan="4">EVENT CALCULATOR  ID {_ec_sid} → {_ec_eid}</td></tr>
-                <tr><td class="el">TTL TIME</td><td class="ttl" colspan="3">{_ttl_time_s}</td></tr>
+                <tr><td class="el">TTL TIME</td><td class="ttl" colspan="3">{round(_ttl_min/60, 2)} h</td></tr>
                 <tr><td class="sh" colspan="2">TOTAL RHS</td><td class="sh" colspan="2">FUEL CONSUMPTION</td></tr>
                 <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub">HFO</td><td class="sub">DO</td></tr>
-                <tr><td class="el">M/E</td><td class="ev">{_ec_min_to_hhmm(_rhs["ME"])}</td>
-                    <td class="ev" rowspan="6">{_ecv(_hfo_cons)}</td>
-                    <td class="ev" rowspan="6">{_ecv(_do_cons)}</td></tr>
-                <tr><td class="el">D/G#1</td><td class="ev">{_ec_min_to_hhmm(_rhs["DG1"])}</td></tr>
-                <tr><td class="el">D/G#2</td><td class="ev">{_ec_min_to_hhmm(_rhs["DG2"])}</td></tr>
-                <tr><td class="el">D/G#3</td><td class="ev">{_ec_min_to_hhmm(_rhs["DG3"])}</td></tr>
-                <tr><td class="el">D/G's</td><td class="ev">{_ec_min_to_hhmm(_rhs["DGs"])}</td></tr>
-                <tr><td class="el">BLR</td><td class="ev">{_ec_min_to_hhmm(_rhs["BLR"])}</td></tr>
+                <tr><td class="el">M/E</td><td class="ev">{_ecv(_rhs["ME"])}</td>
+                    <td class="ev">{_ecv(_me_hfo)}</td><td class="ev">{_ecv(_me_do)}</td></tr>
+                <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_rhs["DG1"])}</td><td class="ev">{_ecv(_dg1_hfo)}</td><td class="ev">{_ecv(_dg1_do)}</td></tr>
+                <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_rhs["DG2"])}</td><td class="ev">{_ecv(_dg2_hfo)}</td><td class="ev">{_ecv(_dg2_do)}</td></tr>
+                <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_rhs["DG3"])}</td><td class="ev">{_ecv(_dg3_hfo)}</td><td class="ev">{_ecv(_dg3_do)}</td></tr>
+                <tr><td class="el">D/G's</td><td class="ev">{_ecv(_rhs["DGs"])}</td><td class="ev">{_ecv(_dg_hfo_disp)}</td><td class="ev">{_ecv(_dg_do_disp)}</td></tr>
+                <tr><td class="el">BLR</td><td class="ev">{_ecv(_rhs["BLR"])}</td><td class="ev">{_ecv(_blr_hfo)}</td><td class="ev">{_ecv(_blr_do)}</td></tr>
+                <tr><td class="el">ST_TIME</td><td class="ev">{_ttl_time_s}</td><td class="ev">{_ecv(_hfo_cons)}</td><td class="ev">{_ecv(_do_cons)}</td></tr>
                 </table>
                 '''
 
-                # Section 2: SCRUBBER + OIL CONSUMPTION
+                # Section 2: FUEL ROB + OIL CONSUMPTION
                 _ect_html += f'''
                 <table class="ect2">
-                <tr><td class="sh" colspan="2">SCRUBBER</td><td class="sh" colspan="2">OIL CONSUMPTION</td></tr>
-                <tr><td class="el">RATIO</td><td class="ev">{_ecv(_avg_sox)}</td>
+                <tr><td class="sh" colspan="2">FUEL ROB</td><td class="sh" colspan="2">OIL CONSUMPTION</td></tr>
+                <tr><td class="el">HFO</td><td class="ev">{_ecv(_fuel_rob["hfo"])}</td>
                     <td class="el">M/E SYS</td><td class="ev">{_ecv(_oil["me_sys"])}</td></tr>
-                <tr><td class="el">OPEN</td><td class="ev">{_ec_min_to_hhmm(_ol_min)}</td>
+                <tr><td class="el">DO</td><td class="ev">{_ecv(_fuel_rob["do"])}</td>
                     <td class="el">M/E CYL</td><td class="ev">{_ecv(_oil["me_cyl"])}</td></tr>
-                <tr><td class="el">CLOSE</td><td class="ev">{_ec_min_to_hhmm(_cl_min)}</td>
+                <tr><td class="el">TTL</td><td class="ev">{_ecv(_fuel_rob["ttl"])}</td>
                     <td class="el">D/G SYS</td><td class="ev">{_ecv(_oil["dg_sys"])}</td></tr>
                 </table>
                 '''
@@ -3050,6 +3403,17 @@ with st.sidebar:
                     <td class="el">TTL PWR</td><td class="ev">{_ecv(_ttl_pwr)}</td></tr>
                 <tr><td class="el">AVG RPM</td><td class="ev">{_ecv(_avg_rpm)}</td>
                     <td class="el">TTL RPM</td><td class="ev">{_ecv(_ttl_rpm)}</td></tr>
+                </table>
+                '''
+
+                # Section 5: SCRUBBER (moved to bottom)
+                _ect_html += f'''
+                <table class="ect2">
+                <tr><td class="sh" colspan="4">SCRUBBER</td></tr>
+                <tr><td class="el">RATIO</td><td class="ev">{_ecv(_avg_sox)}</td>
+                    <td class="el">OPEN</td><td class="ev">{_ec_min_to_hhmm(_ol_min)}</td></tr>
+                <tr><td class="el">CLOSE</td><td class="ev">{_ec_min_to_hhmm(_cl_min)}</td>
+                    <td class="el">TOTAL</td><td class="ev">{_ec_min_to_hhmm(_ol_min + _cl_min)}</td></tr>
                 </table>
                 '''
 

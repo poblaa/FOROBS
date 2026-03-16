@@ -7,6 +7,10 @@ venv/
 # Data files (generated at runtime)
 logbook.db
 chart_data.json
+deployment_v1/download_cache/
+deployment_v1/download_cache_windows/
+*.xlsx
+.~lock.*
 
 # Checkpoints (dev only)
 checkpoints/

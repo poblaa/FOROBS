@@ -1,0 +1,29 @@
+FOROBS v3 - Next step for Windows
+Data: 16-03-2026
+
+Map status:
+- Fuel plan / elcalc maps stay ONLINE
+- no offline map work needed now
+
+What is already ready:
+- source files copied to deployment_v1
+- Windows-targeted package cache in download_cache_windows
+- launcher wrapper: forobs_launcher.py
+- offline install script: install_from_cache_windows.bat
+- build script: build_windows.bat
+
+What to do next on a Windows PC:
+1. Download and install Python 3.12 x64 for Windows
+2. Copy the entire deployment_v1 folder to the Windows PC
+3. Open Command Prompt in deployment_v1
+4. Run: install_from_cache_windows.bat
+5. After install finishes, run: build_windows.bat
+6. Check output: dist\FOROBS.exe
+7. Copy next to EXE if needed:
+   - card_settings.json
+   - card_layout.json
+
+Notes:
+- download_cache_windows is the correct cache for Windows build
+- download_cache (without _windows) is not the target cache for Windows
+- elcalc is included in build script as folder data
