@@ -291,7 +291,7 @@ def fetch_all_events_stable():
 
 def _normalize_numeric_payload(data: dict) -> dict:
     """Normalize numeric payload values before DB write (max 2 decimals)."""
-    int_keys = {'me_rev_c', 'main_flmtr', 'dg_in_flmtr', 'dg_out_flmtr', 'blr_flmtr', 'cyl_oil_count'}
+    int_keys = {'me_rev_c', 'cyl_oil_count'}
     normalized = {}
     for key, value in data.items():
         if isinstance(value, bool):
@@ -881,7 +881,7 @@ def safe_int(val, fallback=0):
         return fallback
 
 # Field type definitions
-INTEGER_KEYS = {'me_rev_c', 'main_flmtr', 'dg_in_flmtr', 'dg_out_flmtr', 'blr_flmtr', 'cyl_oil_count'}
+INTEGER_KEYS = {'me_rev_c', 'cyl_oil_count'}
 HOURS_KEYS = {'me_hrs', 'dg1_hrs', 'dg2_hrs', 'dg3_hrs', 'boiler_hrs',
               'ocl_pp_a', 'ocl_pp_b', 'ocl_pp_c', 'phe_a', 'phe_b',
               'wcu_sep', 'comp_1', 'comp_2', 'w_comp'}
@@ -2445,7 +2445,7 @@ with _eci_col:
             with _c2:
                 if _k1:
                     _corr_vals[_k1] = st.text_input(
-                        '',
+                        _k1,
                         value=str(c2_def.get(_k1, '')),
                         key=f'c2_corr_{_k1}_{_i}{_key_suffix}',
                         label_visibility='collapsed'
@@ -2456,7 +2456,7 @@ with _eci_col:
                 st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _corr_vals[_k2] = st.text_input(
-                    '',
+                    _k2,
                     value=str(c2_def.get(_k2, '')),
                     key=f'c2_corr_{_k2}_{_i}{_key_suffix}',
                     label_visibility='collapsed'
@@ -2479,7 +2479,7 @@ with _eci_col:
             with _c2:
                 if _k1:
                     _fuel_vals[_k1] = st.text_input(
-                        '',
+                        _k1,
                         value=str(c2_def.get(_k1, '')),
                         key=f'c2_fuel_{_k1}_{_i}{_key_suffix}',
                         label_visibility='collapsed'
@@ -2492,7 +2492,7 @@ with _eci_col:
                 st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _fuel_vals[_k2] = st.text_input(
-                    '',
+                    _k2,
                     value=str(c2_def.get(_k2, '')),
                     key=f'c2_fuel_{_k2}_{_i}{_key_suffix}',
                     label_visibility='collapsed'
@@ -2504,7 +2504,8 @@ with _eci_col:
     if c2_submitted and _eid and _eid > 1:
         # DEBUG: log raw _fuel_vals to file
         import json as _dbg_json
-        with open('/tmp/forobs_debug.log', 'a') as _df:
+        _dbg_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'forobs_debug.log')
+        with open(_dbg_log_path, 'a') as _df:
             _df.write(f"\n=== SAVE EVENT CARD for ID {_eid} ===\n")
             _df.write(f"_fuel_vals = {_dbg_json.dumps({k: repr(v) for k,v in _fuel_vals.items()})}\n")
             _df.write(f"_corr_vals = {_dbg_json.dumps({k: repr(v) for k,v in _corr_vals.items()})}\n")
@@ -2526,7 +2527,7 @@ with _eci_col:
             'dg_sys_bnkr':      safe_float(_fuel_vals.get('dg_sys_bnkr', 0)),
         }
         # DEBUG: log c2_data
-        with open('/tmp/forobs_debug.log', 'a') as _df:
+        with open(_dbg_log_path, 'a') as _df:
             _df.write(f"c2_data = {_dbg_json.dumps({k: repr(v) for k,v in c2_data.items()})}\n")
         update_event(_eid, c2_data)
         with st.spinner(f"Recalculating chain from ID {_eid}…"):
@@ -2536,7 +2537,7 @@ with _eci_col:
         except Exception:
             pass
         # DEBUG: verify DB after save
-        with open('/tmp/forobs_debug.log', 'a') as _df:
+        with open(_dbg_log_path, 'a') as _df:
             _dbg_conn = get_connection()
             _dbg_row = _dbg_conn.execute(f"SELECT hfo_bnkr, do_bnkr, me_sys_bnkr FROM events WHERE id = {_eid}").fetchone()
             _df.write(f"DB after save: hfo_bnkr={_dbg_row[0]}, do_bnkr={_dbg_row[1]}, me_sys_bnkr={_dbg_row[2]}\n")
@@ -2646,15 +2647,25 @@ with _inp_col:
                     errors.append("TIME minutes must be 00-59")
 
         int_field_map = [
-            ('inp_me_rev', 'ME REV C'), ('inp_main_fm', 'MAIN FLMTR'),
-            ('inp_dg_in', 'DG IN FLMTR'), ('inp_dg_out', 'DG OUT FLMTR'),
-            ('inp_blr_fm', 'BLR FLMTR'), ('inp_cyl_oil', 'CYL OIL COUNT'),
+            ('inp_me_rev', 'ME REV C'),
+            ('inp_cyl_oil', 'CYL OIL COUNT'),
         ]
         for fkey, flabel in int_field_map:
             val = str(inputs[fkey]).strip()
             if val:
                 if not _re.match(r'^\d+$', val):
                     errors.append(f"{flabel}: whole number only (e.g. 123, 6351)")
+
+        flowmeter_field_map = [
+            ('inp_main_fm', 'MAIN FLMTR'),
+            ('inp_dg_in', 'DG IN FLMTR'),
+            ('inp_dg_out', 'DG OUT FLMTR'),
+            ('inp_blr_fm', 'BLR FLMTR'),
+        ]
+        for fkey, flabel in flowmeter_field_map:
+            val = str(inputs[fkey]).strip()
+            if val and not _re.match(r'^\d+(?:[\.,]\d+)?$', val):
+                errors.append(f"{flabel}: number format (e.g. 123, 123.4, 123,4)")
 
         hrs_field_map = [
             ('inp_me_hrs', 'M/E HRS'), ('inp_dg1_hrs', 'D/G 1 HRS'),
@@ -2710,10 +2721,10 @@ with _inp_col:
                 'date': _date_for_db, 'time': time_val,
                 'event': inputs['inp_event'], 'place': inputs['inp_place'],
                 'me_rev_c': safe_int(inputs['inp_me_rev']),
-                'main_flmtr': safe_int(inputs['inp_main_fm']),
-                'dg_in_flmtr': safe_int(inputs['inp_dg_in']),
-                'dg_out_flmtr': safe_int(inputs['inp_dg_out']),
-                'blr_flmtr': safe_int(inputs['inp_blr_fm']),
+                'main_flmtr': safe_float(inputs['inp_main_fm']),
+                'dg_in_flmtr': safe_float(inputs['inp_dg_in']),
+                'dg_out_flmtr': safe_float(inputs['inp_dg_out']),
+                'blr_flmtr': safe_float(inputs['inp_blr_fm']),
                 'cyl_oil_count': safe_int(inputs['inp_cyl_oil']),
                 'me_pwrmtr': safe_float(inputs['inp_me_pwr']),
                 'me_hrs': safe_float(inputs['inp_me_hrs']),
@@ -2769,15 +2780,13 @@ with _inp_col:
             st.warning("No event selected to delete. Click an event ID in the logbook first.")
 
 with _func_col:
-    with st.form("functions_panel_form"):
-        st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-        _fp_ok, _fp_url = _ensure_elcalc_server()
-        if _fp_ok:
-            st.link_button("Fuel plan", _fp_url, use_container_width=True)
-        else:
-            st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
-            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
-        st.form_submit_button("_", disabled=True, type="secondary")
+    st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
+    _fp_ok, _fp_url = _ensure_elcalc_server()
+    if _fp_ok:
+        st.link_button("Fuel plan", _fp_url, use_container_width=True)
+    else:
+        st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
+        st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
 
     if st.session_state.confirm_delete and st.session_state.editing_id:
         del_id = st.session_state.editing_id

@@ -1,0 +1,348 @@
+/* Simple, modern styling without cascading elements */
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: #f5f5f5;
+    color: #333;
+}
+
+#app {
+    display: flex;
+    height: 100vh;
+}
+
+#left-panel {
+    width: 350px;
+    background-color: white;
+    padding: 20px;
+    box-shadow: 2px 0 5px rgba(0,0,0,0.1);
+    overflow-y: auto;
+}
+
+#left-panel h2 {
+    margin-bottom: 20px;
+    color: #2c3e50;
+}
+
+.form-group {
+    margin-bottom: 15px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: 500;
+}
+
+.form-group input {
+    width: 100%;
+    padding: 8px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.me-avg {
+    margin-top: 8px;
+    margin-bottom: 15px;
+    font-size: 14px;
+    color: #2c3e50;
+    font-weight: 500;
+}
+
+.segment {
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    padding: 15px;
+    margin-bottom: 15px;
+    background-color: #fafafa;
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.segment:hover {
+    background-color: #f0f0f0;
+}
+
+.segment.active {
+    border: 2px solid #3498db;
+    background-color: #e8f4fc;
+    box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+}
+
+.segment h3 {
+    margin-bottom: 10px;
+    color: #34495e;
+}
+
+.segment.active h3 {
+    color: #3498db;
+    font-weight: 600;
+}
+
+.segment-header {
+    cursor: default;
+    user-select: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.toggle-icon {
+    font-size: 12px;
+    color: #7f8c8d;
+    transition: transform 0.2s;
+    cursor: pointer;
+    padding: 5px;
+}
+
+.segment-content {
+    max-height: 1000px;
+    overflow: hidden;
+    transition: max-height 0.3s ease;
+}
+
+.segment.collapsed .segment-content {
+    max-height: 0;
+}
+
+.segment.collapsed {
+    padding: 10px 15px;
+}
+
+button {
+    background-color: #3498db;
+    color: white;
+    border: none;
+    padding: 10px 15px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    margin-right: 10px;
+    margin-bottom: 10px;
+}
+
+button:hover {
+    background-color: #2980b9;
+}
+
+.weather-slider-container {
+    margin-top: 5px;
+}
+
+.weather-labels {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: #666;
+    margin-bottom: 5px;
+}
+
+.weather-factor {
+    width: 100%;
+    cursor: pointer;
+}
+
+.weather-value {
+    text-align: center;
+    font-weight: 600;
+    color: #3498db;
+    margin-top: 5px;
+    font-size: 14px;
+}
+
+.remove-segment {
+    background-color: #e74c3c;
+}
+
+.remove-segment:hover {
+    background-color: #c0392b;
+}
+
+#results {
+    margin-top: 30px;
+}
+
+#results-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+}
+
+#results-table th,
+#results-table td {
+    padding: 8px;
+    text-align: left;
+    border-bottom: 1px solid #ddd;
+}
+
+#results-table th {
+    background-color: #f8f9fa;
+    font-weight: 600;
+}
+
+#map {
+    flex: 1;
+    height: 100vh;
+}
+
+#data-chart-page {
+    flex: 1;
+    height: 100vh;
+    background-color: white;
+    flex-direction: column;
+    padding: 20px;
+    overflow-y: auto;
+}
+
+#back-to-map-btn {
+    background-color: #95a5a6;
+    margin-bottom: 20px;
+    align-self: flex-start;
+}
+
+#back-to-map-btn:hover {
+    background-color: #7f8c8d;
+}
+
+#data-chart-btn {
+    margin-top: 15px;
+    width: 100%;
+}
+
+#chart-content {
+    flex: 1;
+    width: 100%;
+}
+
+#chart-content h2 {
+    color: #2c3e50;
+    margin-bottom: 15px;
+}
+
+#model-chart, #historical-chart {
+    max-width: 100%;
+    margin-bottom: 20px;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    #app {
+        flex-direction: column;
+    }
+
+    #left-panel {
+        width: 100%;
+        height: 50vh;
+    }
+
+    #map {
+        height: 50vh;
+    }
+}
+
+/* Help Modal Styles */
+.modal {
+    position: fixed;
+    z-index: 10000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    overflow: auto;
+}
+
+.modal-content {
+    background-color: #fefefe;
+    margin: 2% auto;
+    padding: 30px;
+    border: 1px solid #888;
+    border-radius: 8px;
+    width: 80%;
+    max-width: 900px;
+    max-height: 90vh;
+    overflow-y: auto;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.modal-content h2 {
+    color: #2c3e50;
+    border-bottom: 3px solid #3498db;
+    padding-bottom: 10px;
+    margin-bottom: 25px;
+}
+
+.manual-section {
+    margin-bottom: 25px;
+    padding: 15px;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    border-left: 4px solid #3498db;
+}
+
+.manual-section h3 {
+    color: #2c3e50;
+    margin-bottom: 12px;
+    font-size: 18px;
+}
+
+.manual-section p {
+    margin-bottom: 10px;
+    line-height: 1.6;
+    color: #555;
+}
+
+.manual-section ul {
+    margin-left: 25px;
+    margin-bottom: 10px;
+}
+
+.manual-section li {
+    margin-bottom: 8px;
+    line-height: 1.6;
+    color: #555;
+}
+
+.manual-section strong {
+    color: #2c3e50;
+}
+
+.manual-section em {
+    color: #7f8c8d;
+    font-style: italic;
+}
+
+.close-modal {
+    color: #aaa;
+    float: right;
+    font-size: 32px;
+    font-weight: bold;
+    cursor: pointer;
+    line-height: 20px;
+}
+
+.close-modal:hover,
+.close-modal:focus {
+    color: #000;
+}
+
+/* App Footer */
+#app-footer {
+    margin-top: 30px;
+    padding-top: 15px;
+    border-top: 1px solid #e0e0e0;
+    text-align: center;
+}
+
+#app-footer p {
+    color: #7f8c8d;
+    font-size: 12px;
+    margin: 0;
+}

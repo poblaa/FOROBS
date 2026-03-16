@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fuel Consumption Calculator</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+</head>
+<body>
+    <div id="app">
+        <div id="left-panel">
+            <h2>Consumption Calculator</h2>
+            <div id="route-form">
+                <div class="form-group">
+                    <label for="hfo-start">HFO Start (mt):</label>
+                    <input type="number" id="hfo-start" step="0.01" value="200">
+                </div>
+                <div class="form-group">
+                    <label for="do-start">DO Start (mt):</label>
+                    <input type="number" id="do-start" step="0.01" value="50">
+                </div>
+
+                <div id="segments">
+                    <div class="segment" data-index="0">
+                        <h3 class="segment-header">Section 1 <span class="toggle-icon">▼</span></h3>
+                        <div class="segment-content">
+                            <div class="form-group">
+                                <label>Distance (nm):</label>
+                                <input type="number" class="distance-nm" step="0.01" placeholder="Enter distance or use map">
+                            </div>
+                            <div class="form-group">
+                                <label>RPM:</label>
+                                <input type="number" class="rpm" min="45" max="123" placeholder="Engine RPM">
+                            </div>
+                            <div class="form-group">
+                                <label>Environmental Factor: <span class="weather-value">1.00</span></label>
+                                <div class="weather-slider-container">
+                                    <div class="weather-labels">
+                                        <span>Good</span>
+                                        <span>Model</span>
+                                        <span>Bad</span>
+                                    </div>
+                                    <input type="range" class="weather-factor" min="0.75" max="1.25" step="0.01" value="1.0">
+                                </div>
+                                <div class="me-avg">ME AVG: 0.000 [mt/h]</div>
+                            </div>
+                            <div class="form-group">
+                                <label>DG Consumption: <span class="dg-value">0.155</span> [mt/h]</label>
+                                <div class="weather-slider-container">
+                                    <input type="range" class="dg-consumption" min="0.13" max="0.18" step="0.01" value="0.155">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Boiler Running: <span class="boiler-value">0</span>%</label>
+                                <div class="weather-slider-container">
+                                    <input type="range" class="boiler-running" min="0" max="100" step="1" value="0">
+                                </div>
+                            </div>
+                            <div class="form-group">
+                                <label>Time (h):</label>
+                                <input type="number" class="time-h" step="0.01" placeholder="Time or auto-calculate">
+                            </div>
+                            <div class="form-group">
+                                <label>Speed (kn):</label>
+                                <input type="number" class="speed-kn" step="0.01" placeholder="Speed for time calc">
+                            </div>
+                            <button class="remove-segment" style="display: none;">Remove</button>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="add-segment">Add Segment</button>
+            </div>
+
+            <div id="results">
+                <h3>Results</h3>
+                <table id="results-table">
+                    <thead>
+                        <tr>
+                            <th>#</th>
+                            <th>Consumption (mt)</th>
+                            <th>HFO ROB (mt)</th>
+                            <th>DO ROB (mt)</th>
+                        </tr>
+                    </thead>
+                    <tbody></tbody>
+                </table>
+                <button id="data-chart-btn">Data Chart</button>
+                <button id="manual-btn" style="margin-left: 10px;">Manual</button>
+            </div>
+            
+            <div id="app-footer">
+                <p>© 2026 Jakub Czarnowski</p>
+            </div>
+        </div>
+
+        <div id="map"></div>
+        <div id="data-chart-page" style="display: none;">
+            <button id="back-to-map-btn">Back to Map</button>
+            <div id="chart-content">
+                <h2>Model Consumption Chart</h2>
+                <canvas id="model-chart"></canvas>
+                <h2 style="margin-top: 30px;">Historical Consumption Chart</h2>
+                <canvas id="historical-chart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Help Modal -->
+    <div id="help-modal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <span class="close-modal">&times;</span>
+            <h2>User Manual - Fuel Consumption Calculator</h2>
+            
+            <div class="manual-section">
+                <h3>1. Getting Started</h3>
+                <p>This calculator helps you plan voyage fuel consumption based on route sections, engine RPM, environmental conditions, and auxiliary equipment usage.</p>
+            </div>
+
+            <div class="manual-section">
+                <h3>2. Section Management</h3>
+                <p><strong>Activating a Section:</strong> Double-click on any section header to activate it. Only one section can be active at a time. The active section has a blue border.</p>
+                <p><strong>Adding Sections:</strong> Click "Add Segment" button to create new route sections.</p>
+                <p><strong>Removing Sections:</strong> Click the "Remove" button within each section (visible when you have 2+ sections).</p>
+                <p><strong>Collapsing Sections:</strong> Click the arrow icon (▼) to collapse/expand section details.</p>
+            </div>
+
+            <div class="manual-section">
+                <h3>3. Distance Input</h3>
+                <p><strong>Manual Entry:</strong> Type distance directly in the "Distance (nm)" field.</p>
+                <p><strong>Map-Based Distance:</strong></p>
+                <ul>
+                    <li><strong>Add Pin:</strong> Click on the map to place waypoints</li>
+                    <li><strong>Move Pin:</strong> Click and hold, then drag to reposition</li>
+                    <li><strong>Remove Pin:</strong> Double-click on any pin to delete it</li>
+                </ul>
+                <p><em>Note: Pins are only active for the currently selected section. Distance is automatically calculated using geographic coordinates (Haversine formula).</em></p>
+            </div>
+
+            <div class="manual-section">
+                <h3>4. Main Engine Parameters</h3>
+                <p><strong>RPM:</strong> Engine revolutions per minute (45-123 RPM range)</p>
+                <p><strong>Environmental Factor (0.75-1.25):</strong></p>
+                <p>The environmental factor represents <strong>all conditions</strong> that can affect fuel consumption, not just weather. This includes:</p>
+                <ul>
+                    <li><strong>Sea conditions:</strong> Wave height, swell direction, current</li>
+                    <li><strong>Wind:</strong> Wind speed and direction relative to ship's course</li>
+                    <li><strong>Hull condition:</strong> Fresh paint after shipyard (lower), biofouling/growth (higher)</li>
+                    <li><strong>Cargo:</strong> Loading condition, cargo weight distribution</li>
+                    <li><strong>Ship's trim:</strong> Optimal vs. sub-optimal trim</li>
+                    <li><strong>Other factors:</strong> Water temperature, density, pilot areas with reduced speed</li>
+                </ul>
+                <p><strong>Factor Range Guidelines:</strong></p>
+                <ul>
+                    <li><strong>0.75-0.90:</strong> Very favorable conditions (calm seas, favorable current, fresh hull after shipyard)</li>
+                    <li><strong>0.90-1.10:</strong> Most common range - quite accurate for normal operations</li>
+                    <li><strong>1.00:</strong> Standard model conditions</li>
+                    <li><strong>1.10-1.25:</strong> Adverse conditions (rough seas, strong wind, hull fouling, poor trim)</li>
+                </ul>
+                <p><strong>⚠️ Important:</strong> Values between <strong>0.9-1.1 are quite accurate</strong>. When using factors outside this range (especially above 1.1 or below 0.9), <strong>pay special attention to the historical data chart</strong> to verify your working point falls within the data cloud.</p>
+                <p><strong>ME AVG:</strong> Displays the calculated main engine consumption rate corrected by the environmental factor (shows yc = y × factor in mt/h).</p>
+            </div>
+
+            <div class="manual-section">
+                <h3>5. Environmental Factor Validation</h3>
+                <p><strong>⚠️ Important:</strong> When using environmental factors other than 1.00, verify your results against historical data:</p>
+                <ul>
+                    <li>Click "Data Chart" to view historical consumption data</li>
+                    <li>Check if your red working point falls within the cloud density of blue historical points</li>
+                    <li>If the red dot is far from the historical data cloud, your environmental factor may be incorrect</li>
+                </ul>
+                <p><em>Note: The environmental factor system is under continuous improvement. Always cross-reference with historical data for accuracy.</em></p>
+            </div>
+
+            <div class="manual-section">
+                <h3>6. Auxiliary Equipment</h3>
+                <p><strong>DG Consumption (0.13-0.18 mt/h):</strong></p>
+                <ul>
+                    <li>Diesel Generator approximate consumption rate</li>
+                    <li>Default: 0.155 mt/h for normal conditions</li>
+                    <li>Increase slightly in summer when air conditioning load is higher</li>
+                    <li><strong>⚠️ Only ONE DG is running at a time</strong></li>
+                </ul>
+                
+                <p><strong>Boiler Running (0-100%):</strong></p>
+                <ul>
+                    <li>Percentage of section time that the boiler operates</li>
+                    <li>Boiler nominal consumption: 0.060 mt/h (uses DO fuel)</li>
+                    <li>Example: 50% means boiler runs half the section duration</li>
+                    <li>Boiler consumption remains constant throughout the year</li>
+                </ul>
+            </div>
+
+            <div class="manual-section">
+                <h3>7. Time and Speed Calculation</h3>
+                <p>You can input either time OR speed - the other will be calculated automatically:</p>
+                <ul>
+                    <li>If you enter <strong>Time</strong>: Speed = Distance ÷ Time</li>
+                    <li>If you enter <strong>Speed</strong>: Time = Distance ÷ Speed</li>
+                </ul>
+            </div>
+
+            <div class="manual-section">
+                <h3>8. Results Interpretation</h3>
+                <p><strong>Consumption:</strong> Total HFO consumed in this section (Main Engine + DG)</p>
+                <p><strong>HFO ROB:</strong> Heavy Fuel Oil Remaining On Board after this section</p>
+                <p><strong>DO ROB:</strong> Diesel Oil Remaining On Board after this section (used by boiler)</p>
+                <p><em>⚠️ If HFO ROB > HFO Start, you'll see a red warning - check your starting fuel value.</em></p>
+            </div>
+
+            <div class="manual-section">
+                <h3>9. About the Model</h3>
+                <p><strong>Data Collection Period:</strong> 28 January 2020 to 28 January 2026 (6 years)</p>
+                <p><strong>Data Quality:</strong> Over 2,000 high-accuracy fuel readings selected using strict criteria:</p>
+                <ul>
+                    <li>Only events with duration longer than 5 hours</li>
+                    <li>Main engine running time: 5 hours ± 20 minutes</li>
+                    <li>Additional filtering conditions to ensure measurement accuracy</li>
+                </ul>
+                <p><strong>Model Equation:</strong><br>
+                y = 0.000124176621498486×(RPM²) - 0.00391529744030522×(RPM) + 0.104802913006673<br>
+                <em>where y = consumption [mt/h], RPM = engine revolutions per minute</em></p>
+                <p><strong>Corrected Consumption:</strong> yc = y × Environmental Factor</p>
+            </div>
+
+            <div class="manual-section">
+                <h3>10. Data Visualization</h3>
+                <p>Click "Data Chart" to toggle between map and charts:</p>
+                <ul>
+                    <li><strong>Model Consumption Chart:</strong> Blue curve showing the baseline model (45-124 RPM)</li>
+                    <li><strong>Historical Consumption Chart:</strong> Blue scatter points from actual measurements</li>
+                    <li><strong>Red Working Points:</strong> Your current section parameters plotted on charts</li>
+                </ul>
+            </div>
+
+            <div class="manual-section">
+                <h3>11. Tips & Best Practices</h3>
+                <ul>
+                    <li>Always activate the section before placing pins on the map</li>
+                    <li>Verify environmental factors against historical data cloud</li>
+                    <li>Remember: Only ONE DG runs at a time - adjust consumption accordingly</li>
+                    <li>Use boiler percentage for partial operation (e.g., 30% if running 3 hours out of 10)</li>
+                    <li>Check HFO ROB warnings to ensure sufficient starting fuel</li>
+                    <li>Summer operations: slightly increase DG consumption for AC load</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="script.js?v=1738704000"></script>
+</body>
+</html>
