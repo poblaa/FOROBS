@@ -93,14 +93,14 @@ HFO_ROB and DO_ROB update
  DG_FO_set  - User input. Value is string.  Value can be = HFO or DO (its NOT part of input card, it will be described further)
  BLR_FO_set - User input. Value is string.  Value can be = HFO or DO (its NOT part of input card, it will be described further)
 
- ME_HFO_CALC_cons [mT] - Main Engine consumption of Heavy Fuel Oil. Formula: ((present MAIN_FLMTR minus previous MAIN_FLMTR equals to ME_HFO_cons)*0.919)/1000
- ME_DO_CALC_cons  [mT] - Main Engine consumption of Diesel Fuel Oil. Formula: ((present MAIN_FLMTR minus previous MAIN_FLMTR equals to ME_DO_cons)*0.870)/1000
+ ME_HFO_CALC_cons [mT] - Main Engine consumption of Heavy Fuel Oil. Formula: ((present MAIN_FLMTR minus previous MAIN_FLMTR equals to ME_HFO_cons)*0.94)/1000
+ ME_DO_CALC_cons  [mT] - Main Engine consumption of Diesel Fuel Oil. Formula: ((present MAIN_FLMTR minus previous MAIN_FLMTR equals to ME_DO_cons)*0.855)/1000
  
- BLR_HFO_CALC__cons [mT] - Boiler consumption of Heavy Fuel Oil. Formula: ((present BLR_FLMTR minus previous BLR_FLMTR equals to BLR_HFO_cons)*0.919)/1000
- BLR_DO_CALC_cons [mT] - Boiler consumption of DIesel Fuel Oil. Formula: ((present BLR_FLMTR minus previous BLR_FLMTR equals to BLR_DO_cons)*0.870)/1000
+ BLR_HFO_CALC__cons [mT] - Boiler consumption of Heavy Fuel Oil. Formula: ((present BLR_FLMTR minus previous BLR_FLMTR equals to BLR_HFO_cons)*0.94)/1000
+ BLR_DO_CALC_cons [mT] - Boiler consumption of DIesel Fuel Oil. Formula: ((present BLR_FLMTR minus previous BLR_FLMTR equals to BLR_DO_cons)*0.855)/1000
 
- DG_HFO_CALC_cons [mT] - Diesel Generator consumption of Heafy Fuel Oil. Formula: ((present DG_IN_FLMTR minus previous DG_IN_FLMTR minus present DG_OUT_FLMTR plus previous DG_OUT_FLMTR)*0.919)/1000
- DG_DO_CALC_cons [mT] - Diesel Generator consumption of Diesel Fuel Oil. Formula: ((present DG_IN_FLMTR minus previous DG_IN_FLMTR minus present DG_OUT_FLMTR plus previous DG_OUT_FLMTR)*0.870)/1000
+ DG_HFO_CALC_cons [mT] - Diesel Generator consumption of Heafy Fuel Oil. Formula: ((present DG_IN_FLMTR minus previous DG_IN_FLMTR minus present DG_OUT_FLMTR plus previous DG_OUT_FLMTR)*0.94)/1000
+ DG_DO_CALC_cons [mT] - Diesel Generator consumption of Diesel Fuel Oil. Formula: ((present DG_IN_FLMTR minus previous DG_IN_FLMTR minus present DG_OUT_FLMTR plus previous DG_OUT_FLMTR)*0.855)/1000
 
 ME_HFO_ACC_cons     [mT] - Its accepted consumption value. If ME_HFO_COR_cons equals to 0 (means user dont input value) then ME_HFO_CALC_cons is accepted
 ME_DO_ACC_cons      [mT] - Its accepted consumption value. If ME_DO_COR_cons equals to 0 (means user dont input value) then ME_HFO_CALC_cons is accepted

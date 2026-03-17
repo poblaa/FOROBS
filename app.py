@@ -465,18 +465,18 @@ def _compute_calculated_values(present, previous):
         calc[fs] = (previous.get(fs) or 'HFO') if (not val or val == 'None') else val
 
     me_flmtr_diff = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
-    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * 0.919) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
-    calc['me_do_calc_cons'] = round((me_flmtr_diff * 0.870) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
+    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * 0.94) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
+    calc['me_do_calc_cons'] = round((me_flmtr_diff * 0.855) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
-    calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * 0.919) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
-    calc['blr_do_calc_cons'] = round((blr_flmtr_diff * 0.870) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
+    calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * 0.94) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
+    calc['blr_do_calc_cons'] = round((blr_flmtr_diff * 0.855) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
 
     dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
     dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
     dg_net_diff = max(dg_in_diff - dg_out_diff, 0)
-    calc['dg_hfo_calc_cons'] = round((dg_net_diff * 0.919) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
-    calc['dg_do_calc_cons'] = round((dg_net_diff * 0.870) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
+    calc['dg_hfo_calc_cons'] = round((dg_net_diff * 0.94) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
+    calc['dg_do_calc_cons'] = round((dg_net_diff * 0.855) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
 
     # ── HFO / DO corrected consumption: proportional split among ALL devices ──
     # User enters total corrected HFO (me_hfo_cor_cons) and total corrected DO (me_do_cor_cons).
