@@ -20,6 +20,9 @@ DB_PATH = "logbook.db"
 ELCALC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elcalc')
 ELCALC_PORT = 8502
 
+# M/E Cylinder oil specific consumption constant [g/kWh]
+ME_CYL_OIL_G_PER_KWH = 0.0007
+
 def _is_local_port_open(port, host='127.0.0.1', timeout=0.2):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -159,7 +162,7 @@ def init_db():
         ('dg_sys_rob', 'REAL'),
         # Oil CALC consumption
         ('me_sys_calc_cons', 'REAL'),   # user input from oil card
-        ('me_cyl_calc_cons', 'REAL'),   # auto: cyl_oil_count diff
+        ('me_cyl_calc_cons', 'REAL'),   # auto: avg_pwr * 0.0007 * st_time_h
         ('dg_sys_calc_cons', 'REAL'),   # user input from oil card
         # Oil COR consumption (user correction from oil card)
         ('me_sys_cor_cons', 'REAL'),
@@ -471,7 +474,8 @@ def _compute_calculated_values(present, previous):
     calc['avg_rpm'] = round(max(rev_diff, 0) / me_diff_minutes, 2) if me_diff_minutes > 0 else 0.0
     calc['ttl_rpm'] = round(max(rev_diff, 0), 2)
 
-    calc['me_cyl_calc_cons'] = round(max(_g(present, 'cyl_oil_count') - _g(previous, 'cyl_oil_count'), 0), 2)
+    # M/E CYL oil consumption: avg_pwr [kW] * ME_CYL_OIL_G_PER_KWH [g/kWh] * st_time [h]
+    calc['me_cyl_calc_cons'] = round(max(calc['avg_pwr'] * ME_CYL_OIL_G_PER_KWH * me_diff_dec, 0), 4)
     calc['me_sys_calc_cons'] = _g(present, 'me_sys_calc_cons')
     calc['dg_sys_calc_cons'] = _g(present, 'dg_sys_calc_cons')
 
@@ -2161,7 +2165,7 @@ _card_pos_js = _card_pos_js.replace('__INP_LOCKED__', str(_inp_l['locked']).lowe
 _card_pos_js = _card_pos_js.replace('__FUNC_TOP__', str(_func_l['top']))
 _card_pos_js = _card_pos_js.replace('__FUNC_RIGHT__', str(_func_l['right']))
 _card_pos_js = _card_pos_js.replace('__FUNC_LOCKED__', str(_func_l['locked']).lower())
-_card_pos_js = _card_pos_js.replace('__SETT_BASE_W__', str(_sett_s.get('base_width', 300)))
+_card_pos_js = _card_pos_js.replace('__SETT_BASE_W__', str(_sett_s.get('base_width', 480)))
 _card_pos_js = _card_pos_js.replace('__SETT_MIN_Z__', str(_sett_s.get('min_zoom', 1.0)))
 _card_pos_js = _card_pos_js.replace('__SETT_MAX_Z__', str(_sett_s.get('max_zoom', 1.8)))
 _card_pos_js = _card_pos_js.replace('__SETT_DEF_Z__', str(_sett_s.get('default_zoom', 1.0)))
@@ -2978,40 +2982,60 @@ with _inp_col:
         if st.session_state.editing_id:
             st.session_state.confirm_delete = True
         else:
-            st.warning("No event selected to delete. Click an event ID in the logbook first.")
+            st.toast("No event selected to delete. Click an event ID in the logbook first.", icon="⚠️")
 
+# ---- DELETE CONFIRMATION DIALOG ----
+@st.dialog("Confirm Delete")
+def _confirm_delete_dialog():
+    _del_id = st.session_state.editing_id
+    st.warning(f"Are you sure you want to DELETE Event #{_del_id}?")
+    _dc1, _dc2 = st.columns(2)
+    with _dc1:
+        if st.button("YES — Delete", type="primary", use_container_width=True):
+            delete_event(_del_id)
+            recalculate_chain(_del_id)
+            try:
+                rebuild_chart_data()
+            except Exception:
+                pass
+            st.session_state.editing_id = None
+            st.session_state.confirm_delete = False
+            st.rerun()
+    with _dc2:
+        if st.button("NO — Cancel", use_container_width=True):
+            st.session_state.confirm_delete = False
+            st.rerun()
+
+if st.session_state.confirm_delete and st.session_state.editing_id:
+    _confirm_delete_dialog()
+
+# ---- FUNCTIONS PANEL (floating card) ----
 with _func_col:
-    st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-    _fp_ok, _fp_url = _ensure_elcalc_server()
-    if _fp_ok:
-        st.link_button("Fuel plan", _fp_url, use_container_width=True)
-    else:
-        st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
-        st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
-    if st.button("Settings", use_container_width=True, key="_settings_btn"):
+    with st.form("functions_panel_form"):
+        st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
+        _fp_ok, _fp_url = _ensure_elcalc_server()
+        _fp_btn_style = (
+            "display:block;width:100%;text-align:center;padding:6px 12px;"
+            "background:#0e1117;color:white;border-radius:6px;text-decoration:none;"
+            "font-size:14px;font-weight:400;border:1px solid rgba(250,250,250,0.2);"
+            "cursor:pointer;margin-bottom:6px;"
+        )
+        if _fp_ok:
+            st.markdown(
+                f'<a href="{_fp_url}" target="_blank" style="{_fp_btn_style}">⛽ Fuel plan</a>',
+                unsafe_allow_html=True
+            )
+        else:
+            _fp_dis_style = _fp_btn_style + "opacity:0.4;cursor:not-allowed;"
+            st.markdown(
+                f'<div style="{_fp_dis_style}">⛽ Fuel plan (unavailable)</div>',
+                unsafe_allow_html=True
+            )
+            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+        _settings_submitted = st.form_submit_button("⚙ Settings", use_container_width=True)
+    if _settings_submitted:
         st.session_state.show_settings = not st.session_state.get('show_settings', False)
         st.rerun()
-
-    if st.session_state.confirm_delete and st.session_state.editing_id:
-        del_id = st.session_state.editing_id
-        st.warning(f"Are you sure you want to DELETE Event #{del_id}?")
-        dc1, dc2 = st.columns([1, 1])
-        with dc1:
-            if st.button("YES", type="primary", use_container_width=True, key="confirm_yes"):
-                delete_event(del_id)
-                recalculate_chain(del_id)
-                try:
-                    rebuild_chart_data()
-                except Exception:
-                    pass
-                st.session_state.editing_id = None
-                st.session_state.confirm_delete = False
-                st.success(f"Event #{del_id} deleted!")
-                st.rerun()
-        with dc2:
-            if st.button("NO", use_container_width=True, key="confirm_no"):
-                st.session_state.confirm_delete = False
-                st.rerun()
 
 # ---- SETTINGS PANEL ----
 _app_settings_now = _load_app_settings()
@@ -3060,7 +3084,7 @@ with _settings_col:
                 'boiler_user_defined_rate': float(_blr_rate),
             }
             if not _save_app_settings(_new_settings):
-                st.error("Failed to save settings (check file permissions).")
+                st.toast("Failed to save settings (check file permissions).", icon="❌")
             else:
                 st.session_state.show_settings = False
                 st.rerun()
@@ -3689,7 +3713,7 @@ with st.sidebar:
                 # Validation row
                 _scrub_total = _ol_min + _cl_min
                 if _scrub_total > 0 and abs(_scrub_total - _ttl_min) > 1:
-                    st.warning(f"⚠ Scrubber OL+CL ({_ec_min_to_hhmm(_scrub_total)}) ≠ TTL TIME ({_ttl_time_s})")
+                    st.toast(f"⚠ Scrubber OL+CL ({_ec_min_to_hhmm(_scrub_total)}) ≠ TTL TIME ({_ttl_time_s})", icon="⚠️")
             else:
                 st.info("Invalid event IDs. Check start/end range.")
           else:

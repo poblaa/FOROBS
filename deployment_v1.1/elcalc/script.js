@@ -4,6 +4,9 @@
 // Weather correction: yc = y * W (W = 0.5 to 1.5)
 // ROB = HFO_start - yc * T (cumulative)
 
+// M/E Cylinder oil specific consumption constant [g/kWh]
+const ME_CYL_OIL_G_PER_KWH = 0.0007;
+
 class FuelCalculator {
     constructor() {
         this.map = null;
@@ -810,6 +813,10 @@ class FuelCalculator {
                     <label>Speed (kn):</label>
                     <input type="number" class="speed-kn" step="0.01" placeholder="Speed for time calc">
                 </div>
+                <div class="form-group">
+                    <label>ME AVG PWR (kW): <span class="me-pwr-cyl-value">—</span> g M/E CYL</label>
+                    <input type="number" class="me-avg-pwr" step="1" min="0" placeholder="ME avg power (optional)">
+                </div>
                 <button class="remove-segment">Remove</button>
             </div>
         `;
@@ -945,6 +952,7 @@ class FuelCalculator {
             const boilerRunning = parseFloat(segment.querySelector('.boiler-running').value) || 0;
             let time = parseFloat(segment.querySelector('.time-h').value) || 0;
             const speed = parseFloat(segment.querySelector('.speed-kn').value) || 0;
+            const meAvgPwr = parseFloat(segment.querySelector('.me-avg-pwr').value) || 0;
 
             // Calculate time if not provided and speed is available
             if (time === 0 && speed > 0 && distance > 0) {
@@ -963,6 +971,15 @@ class FuelCalculator {
             
             currentRob -= totalConsumption;
 
+            // M/E CYL oil consumption: me_avg_pwr [kW] * ME_CYL_OIL_G_PER_KWH [g/kWh] * time [h]
+            const meCylOilG = meAvgPwr > 0 ? (meAvgPwr * ME_CYL_OIL_G_PER_KWH * time) : null;
+
+            // Update M/E CYL display in segment
+            const cylDisplay = segment.querySelector('.me-pwr-cyl-value');
+            if (cylDisplay) {
+                cylDisplay.textContent = meCylOilG !== null ? meCylOilG.toFixed(2) : '—';
+            }
+
             // Check for warning conditions
             if (currentRob > hfoStart) {
                 hasWarning = true; // ROB exceeds start - negative consumption error
@@ -978,7 +995,8 @@ class FuelCalculator {
                 segment: index + 1,
                 consumption: totalConsumption.toFixed(3),
                 rob: currentRob.toFixed(3),
-                doRob: currentDoRob.toFixed(3)
+                doRob: currentDoRob.toFixed(3),
+                meCylOilG: meCylOilG !== null ? meCylOilG.toFixed(2) : '—'
             });
         });
 
@@ -1014,6 +1032,7 @@ class FuelCalculator {
                 <td>${result.consumption}</td>
                 <td>${result.rob}</td>
                 <td>${result.doRob}</td>
+                <td>${result.meCylOilG}</td>
             `;
             tbody.appendChild(row);
         });

@@ -67,6 +67,10 @@
                                 <label>Speed (kn):</label>
                                 <input type="number" class="speed-kn" step="0.01" placeholder="Speed for time calc">
                             </div>
+                            <div class="form-group">
+                                <label>ME AVG PWR (kW): <span class="me-pwr-cyl-value">—</span> g M/E CYL</label>
+                                <input type="number" class="me-avg-pwr" step="1" min="0" placeholder="ME avg power (optional)">
+                            </div>
                             <button class="remove-segment" style="display: none;">Remove</button>
                         </div>
                     </div>
@@ -84,6 +88,7 @@
                             <th>Consumption (mt)</th>
                             <th>HFO ROB (mt)</th>
                             <th>DO ROB (mt)</th>
+                            <th>M/E CYL (g)</th>
                         </tr>
                     </thead>
                     <tbody></tbody>
@@ -204,10 +209,22 @@
             </div>
 
             <div class="manual-section">
+                <h3>7a. M/E Cylinder Oil Consumption</h3>
+                <p><strong>ME AVG PWR (kW):</strong> Optional input. When provided, M/E cylinder oil consumption is calculated using the formula:</p>
+                <p><em>M/E CYL [g] = ME AVG PWR [kW] * 0.0007 [g/kWh] * Time [h]</em></p>
+                <ul>
+                    <li>The constant 0.0007 g/kWh represents typical cylinder oil specific consumption</li>
+                    <li>Result shown in grams per section in the results table</li>
+                    <li>Leave blank if not planning cylinder oil (field shows "—")</li>
+                </ul>
+            </div>
+
+            <div class="manual-section">
                 <h3>8. Results Interpretation</h3>
                 <p><strong>Consumption:</strong> Total HFO consumed in this section (Main Engine + DG)</p>
                 <p><strong>HFO ROB:</strong> Heavy Fuel Oil Remaining On Board after this section</p>
                 <p><strong>DO ROB:</strong> Diesel Oil Remaining On Board after this section (used by boiler)</p>
+                <p><strong>M/E CYL:</strong> Cylinder oil consumed in this section (grams), based on ME AVG PWR * 0.0007 * Time</p>
                 <p><em>⚠️ If HFO ROB > HFO Start, you'll see a red warning - check your starting fuel value.</em></p>
             </div>
 
