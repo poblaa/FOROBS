@@ -1,0 +1,26 @@
+Following names should be changed, resized, modified
+
+Route Planner to Consumption Calculator
+
+Segment "x" to Section "x"
+
+Weather Factor to Enviromental Factor
+
+ME AVG: xxx [mmt/h] should have same font size as weather factor
+
+Weather Factor:
+--slider---
+    "value"   , value should be in one line with weather factor:
+
+    Weather Factor: "value"
+    --slider--
+
+Dg Consumption [mt/h]: "value"
+--slider--  (same as weather factor)
+
+Boiler Running: "value"[%]
+---Slider---
+
+
+Results
+Instead segment, use just numbers 1,2,3,4 it will save space and rest will be more visible

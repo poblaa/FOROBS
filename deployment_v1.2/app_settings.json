@@ -1,0 +1,5 @@
+{
+    "dep_stops_me_counters": "no",
+    "boiler_fuel_mode": "flowmeter",
+    "boiler_user_defined_rate": 0.0
+}

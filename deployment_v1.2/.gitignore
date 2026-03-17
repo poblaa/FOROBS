@@ -1,0 +1,12 @@
+# Runtime database
+logbook.db
+
+# Generated chart data
+chart_data.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Lock files
+.~lock.*
