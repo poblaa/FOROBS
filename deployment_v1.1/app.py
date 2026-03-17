@@ -85,17 +85,18 @@ def _load_app_settings():
             with open(_APP_SETTINGS_PATH, 'r') as _f:
                 data = json.load(_f)
                 defaults.update(data)
-    except Exception:
+    except (json.JSONDecodeError, OSError):
         pass
     return defaults
 
 def _save_app_settings(settings):
-    """Save user app settings to JSON file."""
+    """Save user app settings to JSON file. Returns True on success, False on error."""
     try:
         with open(_APP_SETTINGS_PATH, 'w') as _f:
             json.dump(settings, _f, indent=4)
-    except Exception:
-        pass
+        return True
+    except OSError:
+        return False
 
 def init_db():
     """Initialize SQLite database with events table"""
@@ -492,9 +493,10 @@ def _compute_calculated_values(present, previous):
     calc['me_do_calc_cons'] = round((me_flmtr_diff * 0.870) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
-    _blr_mode = _load_app_settings().get('boiler_fuel_mode', 'flowmeter')
+    _blr_settings = _load_app_settings()
+    _blr_mode = _blr_settings.get('boiler_fuel_mode', 'flowmeter')
     if _blr_mode == 'user_defined':
-        _blr_user_rate = float(_load_app_settings().get('boiler_user_defined_rate') or 0.0)
+        _blr_user_rate = float(_blr_settings.get('boiler_user_defined_rate') or 0.0)
         _blr_hrs_diff = _decimal_diff_to_decimal_hours(_g(present, 'boiler_hrs'), _g(previous, 'boiler_hrs'))
         _blr_ud_cons = round(_blr_hrs_diff * _blr_user_rate, 4)
         calc['blr_hfo_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'HFO' else 0.0
@@ -968,7 +970,7 @@ DEFAULT_LAYOUT = {
     "event_card_input": {"top": 17, "right": 950, "locked": False},
     "input_card": {"top": 20, "right": 19, "locked": False},
     "functions_panel": {"top": 650, "right": 19, "locked": False},
-    "settings_panel": {"top": 770, "right": 19, "locked": False},
+    "settings_panel": {"top": 640, "right": 230, "locked": False},
     "me_sfoc_chart": {"top": 440, "right": 500, "locked": False},
     "dg_chart": {"top": 440, "right": 950, "locked": False}
 }
@@ -2935,7 +2937,7 @@ with _inp_col:
             }
             # ── DEP M/E counter lock enforcement (server-side) ──
             if (inputs['inp_event'] == 'DEPARTURE'
-                    and _load_app_settings().get('dep_stops_me_counters', 'no') == 'yes'):
+                    and _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes'):
                 _sav_prev = _get_prev_event_for_dep(st.session_state.editing_id)
                 if _sav_prev:
                     event_data['me_rev_c'] = safe_int(fmt_field('me_rev_c', _sav_prev.get('me_rev_c')))
@@ -3053,9 +3055,11 @@ with _settings_col:
                 'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
                 'boiler_user_defined_rate': float(_blr_rate),
             }
-            _save_app_settings(_new_settings)
-            st.session_state.show_settings = False
-            st.rerun()
+            if not _save_app_settings(_new_settings):
+                st.error("Failed to save settings (check file permissions).")
+            else:
+                st.session_state.show_settings = False
+                st.rerun()
 
 # ============ LEFT BAR (Sidebar) - Events Logbook ============
 with st.sidebar:

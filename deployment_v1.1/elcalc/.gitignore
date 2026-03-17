@@ -7,3 +7,7 @@ chart window instructions
 
 # Development folders
 windows-alpha/
+
+# Python cache
+__pycache__/
+*.pyc
