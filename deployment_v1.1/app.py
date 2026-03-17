@@ -1093,9 +1093,9 @@ st.markdown("""
     /* Sidebar button - thinner */
     [data-testid="stSidebar"] .stButton > button {
         padding: 2px 8px !important;
-        min-height: 28px !important;
-        height: 28px !important;
-        font-size: 12px !important;
+        min-height: 30px !important;
+        height: 30px !important;
+        font-size: 13px !important;
         margin-top: 2px !important;
     }
     
@@ -1449,6 +1449,16 @@ st.markdown("""
         overflow: hidden !important;
     }
     .chart-card-marker { display: none; height: 0; }
+
+    /* ===== FUEL TYPE COLOUR BANDS ===== */
+    /* Used in Event Output, Event Input, Event Calculator tables */
+    .ev-hfo, .el-hfo { background: #e8d5b8 !important; }
+    .ev-do,  .el-do  { background: #fde8c8 !important; }
+    .ev-oil, .el-oil { background: #ffffcc !important; }
+    /* Matching colour for ec-lbl divs inside Event Input card */
+    .ec-lbl-hfo { background: #e8d5b8 !important; border-color: #c8a882 !important; }
+    .ec-lbl-do  { background: #fde8c8 !important; border-color: #f5c890 !important; }
+    .ec-lbl-oil { background: #ffffcc !important; border-color: #e0e080 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1899,7 +1909,8 @@ _card_pos_js = """<script>
 
         // Basic positioning — must use setProperty with important to override CSS
         form.style.setProperty('position', 'fixed', 'important');
-        form.style.zIndex = '100';
+        // Settings panel floats on top of all other cards
+        form.style.zIndex = (key === 'settings_panel') ? '200' : '100';
         form.style.top = p.top + 'px';
         form.style.right = 'auto';
 
@@ -2342,7 +2353,7 @@ with _me_chart_col:
                 ]
             )
             _me_alt = (_me_base.mark_line() + _me_base.mark_point(size=2)).add_params(_me_pan).properties(height=340)
-            st.altair_chart(_me_alt, use_container_width=True)
+            st.altair_chart(_me_alt, width='stretch')
         else:
             st.caption('No chart data yet.')
         st.form_submit_button('_', disabled=True, type='secondary')
@@ -2389,7 +2400,7 @@ with _dg_chart_col:
                 ]
             )
             _dg_alt = (_dg_base.mark_line() + _dg_base.mark_point(size=3)).add_params(_dg_pan).properties(height=340)
-            st.altair_chart(_dg_alt, use_container_width=True)
+            st.altair_chart(_dg_alt, width='stretch')
         else:
             st.caption('No chart data yet.')
         st.form_submit_button('_', disabled=True, type='secondary')
@@ -2538,14 +2549,14 @@ with _eco_col:
         ]:
             _sec1_rows += (
                 f'<tr><td class="el">{_lbl}</td><td class="ev">{_ov_time(_rk)}</td>'
-                f'<td class="ev">{_hv}</td>'
-                f'<td class="ev">{_dv}</td></tr>'
+                f'<td class="ev ev-hfo">{_hv}</td>'
+                f'<td class="ev ev-do">{_dv}</td></tr>'
             )
         # ST_TIME row with HFO/DO totals
         _sec1_rows += (
             f'<tr><td class="el">ST_TIME</td><td class="ev">{_ov_time("st_time")}</td>'
-            f'<td class="ev">{_hfo_total_s}</td>'
-            f'<td class="ev">{_do_total_s}</td></tr>'
+            f'<td class="ev ev-hfo">{_hfo_total_s}</td>'
+            f'<td class="ev ev-do">{_do_total_s}</td></tr>'
         )
 
         _sec2_rows = ''
@@ -2555,22 +2566,28 @@ with _eco_col:
             ('TTL PWR [kWh]', 'ttl_pwr', 2, 'D/G SYS', 'dg_sys_acc_cons', 2),
             ('TTL RPM [rev]', 'ttl_rpm', 2, '',         None,              None),
         ]:
+            _oil_cls = ' ev-oil' if _rk2 else ''
+            _oil_lbl_cls = ' el-oil' if _rl else ''
             _sec2_rows += (
                 f'<tr><td class="el">{_ll}</td><td class="ev">{_ov(_lk, _ld)}</td>'
-                f'<td class="el">{_rl}</td>'
-                f'<td class="ev">{_ov(_rk2, _rd) if _rk2 else ""}</td></tr>'
+                f'<td class="el{_oil_lbl_cls}">{_rl}</td>'
+                f'<td class="ev{_oil_cls}">{_ov(_rk2, _rd) if _rk2 else ""}</td></tr>'
             )
 
         _sec3_rows = ''
+        _fuel_type_map = {'HFO': 'hfo', 'DO': 'do'}
         for _ll, _lk, _ld, _rl, _rk2, _rd in [
             ('HFO', 'hfo_rob', 2, 'M/E SYS', 'me_sys_rob', 2),
             ('DO',  'do_rob',  2, 'M/E CYL', 'me_cyl_rob', 2),
             ('TTL', None,      0, 'D/G SYS', 'dg_sys_rob', 2),
         ]:
+            _fc = _fuel_type_map.get(_ll, '')
+            _fuel_lbl_cls = f' el-{_fc}' if _fc else ''
+            _fuel_val_cls = f' ev-{_fc}' if _fc else ''
             _lv = _ov(_lk, _ld) if _lk else _ttl_rob_s
             _sec3_rows += (
-                f'<tr><td class="el">{_ll}</td><td class="ev">{_lv}</td>'
-                f'<td class="el">{_rl}</td><td class="ev">{_ov(_rk2, _rd)}</td></tr>'
+                f'<tr><td class="el{_fuel_lbl_cls}">{_ll}</td><td class="ev{_fuel_val_cls}">{_lv}</td>'
+                f'<td class="el el-oil">{_rl}</td><td class="ev ev-oil">{_ov(_rk2, _rd)}</td></tr>'
             )
 
         _tbl_lf = _eco_s.get('table_label_font','11px')
@@ -2589,7 +2606,7 @@ with _eco_col:
         </style>
         <table class="ect">
             <tr><td class="sh" colspan="2">TOTAL RHS</td><td class="sh" colspan="2">FUEL CONSUMPTION</td></tr>
-            <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub">HFO</td><td class="sub">DO</td></tr>
+            <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub ev-hfo">HFO</td><td class="sub ev-do">DO</td></tr>
             {_sec1_rows}
         </table>
         <table class="ect">
@@ -2618,10 +2635,14 @@ with _eci_col:
             ('DO', 'me_do_cor_cons', 'M/E CYL', 'me_cyl_cor_cons'),
             ('', None, 'D/G SYS', 'dg_sys_cor_cons'),
         ]
+        _lbl_fuel_cls = {'HFO': 'ec-lbl ec-lbl-hfo', 'DO': 'ec-lbl ec-lbl-do'}
+        _lbl_oil_labels = {'M/E SYS', 'M/E CYL', 'D/G SYS'}
         for _i, (_l1, _k1, _l2, _k2) in enumerate(_corr_rows):
+            _lbl1_cls = _lbl_fuel_cls.get(_l1, 'ec-lbl')
+            _lbl2_cls = 'ec-lbl ec-lbl-oil' if _l2 in _lbl_oil_labels else 'ec-lbl'
             _c1, _c2, _c3, _c4 = st.columns([1.25, 1, 1.25, 1], gap='small')
             with _c1:
-                st.markdown(f'<div class="ec-lbl">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="{_lbl1_cls}">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
             with _c2:
                 if _k1:
                     _corr_vals[_k1] = st.text_input(
@@ -2633,7 +2654,7 @@ with _eci_col:
                 else:
                     st.markdown('<div class="ec-out empty">&nbsp;</div>', unsafe_allow_html=True)
             with _c3:
-                st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="{_lbl2_cls}">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _corr_vals[_k2] = st.text_input(
                     _k2,
@@ -2652,7 +2673,9 @@ with _eci_col:
             ('SCRUBBER RT', None, 'M/E CYL', 'me_cyl_bnkr'),
             ('', None, 'D/G SYS', 'dg_sys_bnkr'),
         ]
+        _bunkered_lbl_cls = {'HFO': 'ec-lbl ec-lbl-hfo', 'DO': 'ec-lbl ec-lbl-do'}
         for _i, (_l1, _k1, _l2, _k2) in enumerate(_fuel_rows):
+            _lbl2_cls = _bunkered_lbl_cls.get(_l2, 'ec-lbl ec-lbl-oil' if _l2 in _lbl_oil_labels else 'ec-lbl')
             _c1, _c2, _c3, _c4 = st.columns([1.25, 1, 1.25, 1], gap='small')
             with _c1:
                 st.markdown(f'<div class="ec-lbl">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
@@ -2669,7 +2692,7 @@ with _eci_col:
                 else:
                     st.markdown('<div class="ec-out empty">&nbsp;</div>', unsafe_allow_html=True)
             with _c3:
-                st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="{_lbl2_cls}">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _fuel_vals[_k2] = st.text_input(
                     _k2,
@@ -3143,13 +3166,13 @@ with st.sidebar:
         # ── Controls row: New Entry | Columns | Find ──
         _sb_c1, _sb_c2, _sb_c3, _sb_c4 = st.columns([0.8, 0.8, 2.4, 0.5])
         with _sb_c1:
-            if st.button("\u2795 New", use_container_width=True, type="secondary"):
+            if st.button("\u2795", use_container_width=True, type="secondary"):
                 st.session_state.editing_id = None
                 st.session_state.new_entry_mode = True
                 st.session_state.confirm_delete = False
                 st.rerun()
         with _sb_c2:
-            with st.popover("\U0001F4CB Col", use_container_width=True):
+            with st.popover("\U0001F4CB", use_container_width=True):
                 st.caption("Select columns to load in logbook view")
                 pending = st.multiselect(
                     "Columns",
@@ -3299,7 +3322,7 @@ with st.sidebar:
         selection = st.dataframe(
             styled_df,
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
             height=420,
             column_config=_col_cfg,
             on_select="rerun",
@@ -3648,15 +3671,15 @@ with st.sidebar:
                 <tr><td class="sh" colspan="4">EVENT CALCULATOR  ID {_ec_sid} → {_ec_eid}</td></tr>
                 <tr><td class="el">TTL TIME</td><td class="ttl" colspan="3">{round(_ttl_min/60, 2)} h</td></tr>
                 <tr><td class="sh" colspan="2">TOTAL RHS</td><td class="sh" colspan="2">FUEL CONSUMPTION</td></tr>
-                <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub">HFO</td><td class="sub">DO</td></tr>
+                <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub ev-hfo">HFO</td><td class="sub ev-do">DO</td></tr>
                 <tr><td class="el">M/E</td><td class="ev">{_ecv(_rhs["ME"])}</td>
-                    <td class="ev">{_ecv(_me_hfo)}</td><td class="ev">{_ecv(_me_do)}</td></tr>
-                <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_rhs["DG1"])}</td><td class="ev">{_ecv(_dg1_hfo)}</td><td class="ev">{_ecv(_dg1_do)}</td></tr>
-                <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_rhs["DG2"])}</td><td class="ev">{_ecv(_dg2_hfo)}</td><td class="ev">{_ecv(_dg2_do)}</td></tr>
-                <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_rhs["DG3"])}</td><td class="ev">{_ecv(_dg3_hfo)}</td><td class="ev">{_ecv(_dg3_do)}</td></tr>
-                <tr><td class="el">D/G's</td><td class="ev">{_ecv(_rhs["DGs"])}</td><td class="ev">{_ecv(_dg_hfo_disp)}</td><td class="ev">{_ecv(_dg_do_disp)}</td></tr>
-                <tr><td class="el">BLR</td><td class="ev">{_ecv(_rhs["BLR"])}</td><td class="ev">{_ecv(_blr_hfo)}</td><td class="ev">{_ecv(_blr_do)}</td></tr>
-                <tr><td class="el">ST_TIME</td><td class="ev">{_ttl_time_s}</td><td class="ev">{_ecv(_hfo_cons)}</td><td class="ev">{_ecv(_do_cons)}</td></tr>
+                    <td class="ev ev-hfo">{_ecv(_me_hfo)}</td><td class="ev ev-do">{_ecv(_me_do)}</td></tr>
+                <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_rhs["DG1"])}</td><td class="ev ev-hfo">{_ecv(_dg1_hfo)}</td><td class="ev ev-do">{_ecv(_dg1_do)}</td></tr>
+                <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_rhs["DG2"])}</td><td class="ev ev-hfo">{_ecv(_dg2_hfo)}</td><td class="ev ev-do">{_ecv(_dg2_do)}</td></tr>
+                <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_rhs["DG3"])}</td><td class="ev ev-hfo">{_ecv(_dg3_hfo)}</td><td class="ev ev-do">{_ecv(_dg3_do)}</td></tr>
+                <tr><td class="el">D/G's</td><td class="ev">{_ecv(_rhs["DGs"])}</td><td class="ev ev-hfo">{_ecv(_dg_hfo_disp)}</td><td class="ev ev-do">{_ecv(_dg_do_disp)}</td></tr>
+                <tr><td class="el">BLR</td><td class="ev">{_ecv(_rhs["BLR"])}</td><td class="ev ev-hfo">{_ecv(_blr_hfo)}</td><td class="ev ev-do">{_ecv(_blr_do)}</td></tr>
+                <tr><td class="el">ST_TIME</td><td class="ev">{_ttl_time_s}</td><td class="ev ev-hfo">{_ecv(_hfo_cons)}</td><td class="ev ev-do">{_ecv(_do_cons)}</td></tr>
                 </table>
                 '''
 
@@ -3664,12 +3687,12 @@ with st.sidebar:
                 _ect_html += f'''
                 <table class="ect2">
                 <tr><td class="sh" colspan="2">FUEL ROB</td><td class="sh" colspan="2">OIL CONSUMPTION</td></tr>
-                <tr><td class="el">HFO</td><td class="ev">{_ecv(_fuel_rob["hfo"])}</td>
-                    <td class="el">M/E SYS</td><td class="ev">{_ecv(_oil["me_sys"])}</td></tr>
-                <tr><td class="el">DO</td><td class="ev">{_ecv(_fuel_rob["do"])}</td>
-                    <td class="el">M/E CYL</td><td class="ev">{_ecv(_oil["me_cyl"])}</td></tr>
+                <tr><td class="el el-hfo">HFO</td><td class="ev ev-hfo">{_ecv(_fuel_rob["hfo"])}</td>
+                    <td class="el el-oil">M/E SYS</td><td class="ev ev-oil">{_ecv(_oil["me_sys"])}</td></tr>
+                <tr><td class="el el-do">DO</td><td class="ev ev-do">{_ecv(_fuel_rob["do"])}</td>
+                    <td class="el el-oil">M/E CYL</td><td class="ev ev-oil">{_ecv(_oil["me_cyl"])}</td></tr>
                 <tr><td class="el">TTL</td><td class="ev">{_ecv(_fuel_rob["ttl"])}</td>
-                    <td class="el">D/G SYS</td><td class="ev">{_ecv(_oil["dg_sys"])}</td></tr>
+                    <td class="el el-oil">D/G SYS</td><td class="ev ev-oil">{_ecv(_oil["dg_sys"])}</td></tr>
                 </table>
                 '''
 
@@ -3678,11 +3701,11 @@ with st.sidebar:
                 <table class="ect2">
                 <tr><td class="sh" colspan="2">POWER PRODUCTION</td><td class="sh" colspan="2">OIL ROB</td></tr>
                 <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_dg_mwh["DG1"])}</td>
-                    <td class="el">M/E SYS</td><td class="ev">{_ecv(_oil_rob["me_sys"])}</td></tr>
+                    <td class="el el-oil">M/E SYS</td><td class="ev ev-oil">{_ecv(_oil_rob["me_sys"])}</td></tr>
                 <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_dg_mwh["DG2"])}</td>
-                    <td class="el">M/E CYL</td><td class="ev">{_ecv(_oil_rob["me_cyl"])}</td></tr>
+                    <td class="el el-oil">M/E CYL</td><td class="ev ev-oil">{_ecv(_oil_rob["me_cyl"])}</td></tr>
                 <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_dg_mwh["DG3"])}</td>
-                    <td class="el">D/G SYS</td><td class="ev">{_ecv(_oil_rob["dg_sys"])}</td></tr>
+                    <td class="el el-oil">D/G SYS</td><td class="ev ev-oil">{_ecv(_oil_rob["dg_sys"])}</td></tr>
                 </table>
                 '''
 
