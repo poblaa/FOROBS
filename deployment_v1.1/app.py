@@ -70,6 +70,34 @@ _inp_s = CARD_S.get('input_card', {})
 _eco_s = CARD_S.get('event_card_output', {})
 _eci_s = CARD_S.get('event_card_input', {})
 
+# App settings (user-configurable via Settings panel)
+_APP_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_settings.json')
+
+def _load_app_settings():
+    """Load user app settings from JSON file."""
+    defaults = {
+        'dep_stops_me_counters': 'no',
+        'boiler_fuel_mode': 'flowmeter',
+        'boiler_user_defined_rate': 0.0,
+    }
+    try:
+        if os.path.exists(_APP_SETTINGS_PATH):
+            with open(_APP_SETTINGS_PATH, 'r') as _f:
+                data = json.load(_f)
+                defaults.update(data)
+    except (json.JSONDecodeError, OSError):
+        pass
+    return defaults
+
+def _save_app_settings(settings):
+    """Save user app settings to JSON file. Returns True on success, False on error."""
+    try:
+        with open(_APP_SETTINGS_PATH, 'w') as _f:
+            json.dump(settings, _f, indent=4)
+        return True
+    except OSError:
+        return False
+
 def init_db():
     """Initialize SQLite database with events table"""
     conn = sqlite3.connect(DB_PATH)
@@ -465,8 +493,17 @@ def _compute_calculated_values(present, previous):
     calc['me_do_calc_cons'] = round((me_flmtr_diff * 0.870) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
-    calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * 0.919) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
-    calc['blr_do_calc_cons'] = round((blr_flmtr_diff * 0.870) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
+    _blr_settings = _load_app_settings()
+    _blr_mode = _blr_settings.get('boiler_fuel_mode', 'flowmeter')
+    if _blr_mode == 'user_defined':
+        _blr_user_rate = float(_blr_settings.get('boiler_user_defined_rate') or 0.0)
+        _blr_hrs_diff = _decimal_diff_to_decimal_hours(_g(present, 'boiler_hrs'), _g(previous, 'boiler_hrs'))
+        _blr_ud_cons = round(_blr_hrs_diff * _blr_user_rate, 4)
+        calc['blr_hfo_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'HFO' else 0.0
+        calc['blr_do_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'DO' else 0.0
+    else:
+        calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * 0.919) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
+        calc['blr_do_calc_cons'] = round((blr_flmtr_diff * 0.870) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
 
     dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
     dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
@@ -903,6 +940,29 @@ def fmt_field(key, val):
 
 VALID_MINUTES = {'00','06','12','18','24','30','36','42','48','54'}
 
+# DEP lock: fields that must be copied from previous event when DEPARTURE is selected
+_DEP_ME_FIELDS = ['me_rev_c', 'main_flmtr', 'cyl_oil_count', 'me_pwrmtr', 'me_hrs']
+
+def _get_prev_event_for_dep(editing_id=None):
+    """Return dict of previous event values for DEP M/E counter lock.
+    If editing_id is given, get the event just before it; otherwise get the latest."""
+    try:
+        conn = get_connection()
+        conn.row_factory = sqlite3.Row
+        if editing_id and int(editing_id) > 1:
+            row = conn.execute(
+                "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
+                (int(editing_id),)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM events ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        conn.close()
+        return dict(row) if row else {}
+    except Exception:
+        return {}
+
 # ---- Card layout persistence ----
 LAYOUT_FILE = "card_layout.json"
 DEFAULT_LAYOUT = {
@@ -910,6 +970,7 @@ DEFAULT_LAYOUT = {
     "event_card_input": {"top": 17, "right": 950, "locked": False},
     "input_card": {"top": 20, "right": 19, "locked": False},
     "functions_panel": {"top": 650, "right": 19, "locked": False},
+    "settings_panel": {"top": 640, "right": 230, "locked": False},
     "me_sfoc_chart": {"top": 440, "right": 500, "locked": False},
     "dg_chart": {"top": 440, "right": 950, "locked": False}
 }
@@ -1671,13 +1732,15 @@ _main_js = """
 """
 components.html(_main_js, height=0)
 
-# Card drag-and-drop positioning system (6 cards) with zoom-resize
+# Card drag-and-drop positioning system (7 cards) with zoom-resize
 _eco_l = _card_layout['event_card_output']
 _eci_l = _card_layout['event_card_input']
 _inp_l = _card_layout['input_card']
 _func_l = _card_layout['functions_panel']
+_sett_l = _card_layout.get('settings_panel', {'top': 770, 'right': 19, 'locked': False})
 _me_chart_l = _card_layout['me_sfoc_chart']
 _dg_chart_l = _card_layout['dg_chart']
+_sett_s = CARD_S.get('settings_panel', {})
 _card_pos_js = """<script>
 (function(){
     var doc = window.parent.document, win = window.parent;
@@ -1701,6 +1764,10 @@ _card_pos_js = """<script>
             baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
             border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
         },
+        settings_panel: {
+            baseW: __SETT_BASE_W__, minZ: __SETT_MIN_Z__, maxZ: __SETT_MAX_Z__, defZ: __SETT_DEF_Z__,
+            border: '__SETT_BORDER__', borderRadius: '__SETT_BORDER_RADIUS__', padding: '__SETT_PADDING__'
+        },
         me_sfoc_chart: {
             baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
             border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
@@ -1716,6 +1783,7 @@ _card_pos_js = """<script>
         event_card_input:  {top: __ECI_TOP__, right: __ECI_RIGHT__, locked: __ECI_LOCKED__, zoom: CFG.event_card_input.defZ},
         input_card:        {top: __INP_TOP__, right: __INP_RIGHT__, locked: __INP_LOCKED__, zoom: CFG.input_card.defZ},
         functions_panel:   {top: __FUNC_TOP__, right: __FUNC_RIGHT__, locked: __FUNC_LOCKED__, zoom: CFG.functions_panel.defZ},
+        settings_panel:    {top: __SETT_TOP__, right: __SETT_RIGHT__, locked: __SETT_LOCKED__, zoom: CFG.settings_panel.defZ},
         me_sfoc_chart:     {top: __ME_CH_TOP__, right: __ME_CH_RIGHT__, locked: __ME_CH_LOCKED__, zoom: CFG.me_sfoc_chart.defZ},
         dg_chart:          {top: __DG_CH_TOP__, right: __DG_CH_RIGHT__, locked: __DG_CH_LOCKED__, zoom: CFG.dg_chart.defZ}
     };
@@ -1961,13 +2029,96 @@ _card_pos_js = """<script>
             else if (t.indexOf('EVENT INPUT') >= 0) { setupCard(forms[i], 'event_card_input', pos); ok++; }
             else if (t.indexOf('INPUT CARD') >= 0) { setupCard(forms[i], 'input_card', pos); ok++; }
             else if (t.indexOf('FUNCTIONS PANEL') >= 0) { setupCard(forms[i], 'functions_panel', pos); ok++; }
+            else if (t.indexOf('SETTINGS') >= 0) { setupCard(forms[i], 'settings_panel', pos); ok++; }
             else if (t.indexOf('ME SFOC CHART') >= 0 || t.indexOf('SFOC [g/kWh]') >= 0 || t.indexOf('ME SFOC [g/kWh]') >= 0) { setupCard(forms[i], 'me_sfoc_chart', pos); ok++; }
             else if (t.indexOf('DG CONSUMPTION CHART') >= 0 || t.indexOf('DG [mT/h]') >= 0) { setupCard(forms[i], 'dg_chart', pos); ok++; }
         }
+        // Apply DEP lock if active
+        applyDepLock(main);
         return ok >= 5;
     }
 
+    // ── DEP M/E counter lock ──────────────────────────────────────────────
+    // When EVENT selectbox = DEPARTURE and dep-lock-data[data-dep-active]="1",
+    // fill M/E counter inputs with previous event values and make them read-only.
+    var _depLockApplied = false;
+
+    function applyDepLock(main) {
+        var lockDiv = main ? main.querySelector('.dep-lock-data') : null;
+        if (!lockDiv) return;
+        if (lockDiv.getAttribute('data-dep-active') !== '1') {
+            // Remove any previously applied lock
+            _unlockDepFields(main);
+            return;
+        }
+        // Find the EVENT selectbox in the INPUT CARD form
+        var inputForm = null;
+        var forms = main.querySelectorAll('[data-testid="stForm"]');
+        for (var i = 0; i < forms.length; i++) {
+            var h = forms[i].querySelector('.card-header-right');
+            if (h && h.textContent.indexOf('INPUT CARD') >= 0) { inputForm = forms[i]; break; }
+        }
+        if (!inputForm) return;
+
+        // Watch the EVENT selectbox for DEPARTURE
+        var eventSel = null;
+        var allSel = inputForm.querySelectorAll('[data-baseweb="select"] [data-testid="stSelectbox"]');
+        // Try finding via aria-label containing 'EVENT'
+        var allInputs = inputForm.querySelectorAll('input');
+        // Streamlit renders selectbox as a div with current value text
+        // We check the selected value text in the select box wrapper
+        var selectWrappers = inputForm.querySelectorAll('[data-baseweb="select"]');
+        var isDep = false;
+        for (var j = 0; j < selectWrappers.length; j++) {
+            var txt = selectWrappers[j].textContent || '';
+            if (txt.indexOf('DEPARTURE') >= 0) { isDep = true; break; }
+        }
+        if (!isDep) {
+            _unlockDepFields(main);
+            return;
+        }
+        // Lock M/E counter fields
+        var prevVals = {
+            'ME REV C': lockDiv.getAttribute('data-me-rev-c') || '',
+            'MAIN FLMTR': lockDiv.getAttribute('data-main-flmtr') || '',
+            'CYL OIL COUNT': lockDiv.getAttribute('data-cyl-oil-count') || '',
+            'ME PWRMTR': lockDiv.getAttribute('data-me-pwrmtr') || '',
+            'M/E HRS': lockDiv.getAttribute('data-me-hrs') || ''
+        };
+        var inps = inputForm.querySelectorAll('input[aria-label]');
+        for (var k = 0; k < inps.length; k++) {
+            var lbl = (inps[k].getAttribute('aria-label') || '').trim().toUpperCase();
+            if (prevVals.hasOwnProperty(lbl)) {
+                inps[k].setAttribute('readonly', 'readonly');
+                inps[k].style.setProperty('background-color', '#f0f0f0', 'important');
+                inps[k].style.setProperty('color', '#888', 'important');
+                inps[k].style.setProperty('cursor', 'not-allowed', 'important');
+                inps[k].dataset.depLocked = '1';
+            }
+        }
+        _depLockApplied = true;
+    }
+
+    function _unlockDepFields(main) {
+        if (!_depLockApplied) return;
+        if (!main) return;
+        var inps = main.querySelectorAll('input[data-dep-locked="1"]');
+        for (var i = 0; i < inps.length; i++) {
+            inps[i].removeAttribute('readonly');
+            inps[i].style.removeProperty('background-color');
+            inps[i].style.removeProperty('color');
+            inps[i].style.removeProperty('cursor');
+            delete inps[i].dataset.depLocked;
+        }
+        _depLockApplied = false;
+    }
+
     var poll = setInterval(function() { if (init()) clearInterval(poll); }, 150);
+    // Re-apply DEP lock on every poll tick (handles selectbox changes)
+    setInterval(function() {
+        var main = doc.querySelector('section[data-testid="stMain"]');
+        if (main) applyDepLock(main);
+    }, 500);
 })();
 </script>"""
 # Event Card Output settings
@@ -2006,6 +2157,16 @@ _card_pos_js = _card_pos_js.replace('__INP_LOCKED__', str(_inp_l['locked']).lowe
 _card_pos_js = _card_pos_js.replace('__FUNC_TOP__', str(_func_l['top']))
 _card_pos_js = _card_pos_js.replace('__FUNC_RIGHT__', str(_func_l['right']))
 _card_pos_js = _card_pos_js.replace('__FUNC_LOCKED__', str(_func_l['locked']).lower())
+_card_pos_js = _card_pos_js.replace('__SETT_BASE_W__', str(_sett_s.get('base_width', 300)))
+_card_pos_js = _card_pos_js.replace('__SETT_MIN_Z__', str(_sett_s.get('min_zoom', 1.0)))
+_card_pos_js = _card_pos_js.replace('__SETT_MAX_Z__', str(_sett_s.get('max_zoom', 1.8)))
+_card_pos_js = _card_pos_js.replace('__SETT_DEF_Z__', str(_sett_s.get('default_zoom', 1.0)))
+_card_pos_js = _card_pos_js.replace('__SETT_BORDER__', _sett_s.get('border', '2px solid #2c3e50'))
+_card_pos_js = _card_pos_js.replace('__SETT_BORDER_RADIUS__', _sett_s.get('border_radius', '6px'))
+_card_pos_js = _card_pos_js.replace('__SETT_PADDING__', _sett_s.get('padding', '8px 12px 14px 12px'))
+_card_pos_js = _card_pos_js.replace('__SETT_TOP__', str(_sett_l['top']))
+_card_pos_js = _card_pos_js.replace('__SETT_RIGHT__', str(_sett_l['right']))
+_card_pos_js = _card_pos_js.replace('__SETT_LOCKED__', str(_sett_l['locked']).lower())
 _card_pos_js = _card_pos_js.replace('__ME_CH_TOP__', str(_me_chart_l['top']))
 _card_pos_js = _card_pos_js.replace('__ME_CH_RIGHT__', str(_me_chart_l['right']))
 _card_pos_js = _card_pos_js.replace('__ME_CH_LOCKED__', str(_me_chart_l['locked']).lower())
@@ -2023,6 +2184,9 @@ if 'new_entry_mode' not in st.session_state:
 
 if 'confirm_delete' not in st.session_state:
     st.session_state.confirm_delete = False
+
+if 'show_settings' not in st.session_state:
+    st.session_state.show_settings = False
 
 ensure_calculated_fields_ready_once()
 
@@ -2076,11 +2240,19 @@ else:
 # Row 2 disabled if not MID (visual only - fields always editable)
 row2_disabled = (defaults['event'] != "MID")
 
+# ── DEP M/E counter lock: compute previous event values for JS injection ──
+_app_settings_now = _load_app_settings()
+_dep_active = (_app_settings_now.get('dep_stops_me_counters', 'no') == 'yes')
+_dep_prev_vals = {}
+if _dep_active:
+    _dep_prev_vals = _get_prev_event_for_dep(st.session_state.editing_id)
+
 # ============ FLOATING CARDS — draggable via JS, position:fixed ============
 _eco_col = st.container()
 _eci_col = st.container()
 _inp_col = st.container()
 _func_col = st.container()
+_settings_col = st.container()
 _me_chart_col = st.container()
 _dg_chart_col = st.container()
 
@@ -2552,6 +2724,21 @@ with _inp_col:
     with st.form(f"input_card_form{_key_suffix}"):
         st.markdown(f'<div class="card-header-right">{_card_title}</div>', unsafe_allow_html=True)
 
+        # Inject DEP lock data for JavaScript
+        _dep_active_js = '1' if _dep_active else '0'
+        _dep_me_rev = str(_dep_prev_vals.get('me_rev_c') or '')
+        _dep_main_fm = str(_dep_prev_vals.get('main_flmtr') or '')
+        _dep_cyl_oil = str(_dep_prev_vals.get('cyl_oil_count') or '')
+        _dep_me_pwr = str(_dep_prev_vals.get('me_pwrmtr') or '')
+        _dep_me_hrs = str(_dep_prev_vals.get('me_hrs') or '')
+        st.markdown(
+            f'<div class="dep-lock-data" data-dep-active="{_dep_active_js}"'
+            f' data-me-rev-c="{_dep_me_rev}" data-main-flmtr="{_dep_main_fm}"'
+            f' data-cyl-oil-count="{_dep_cyl_oil}" data-me-pwrmtr="{_dep_me_pwr}"'
+            f' data-me-hrs="{_dep_me_hrs}" style="display:none"></div>',
+            unsafe_allow_html=True
+        )
+
         row1_fields = [
             ("DATE",          "inp_date",     defaults['date']),
             ("TIME",          "inp_time",     str(defaults['time'])),
@@ -2748,6 +2935,16 @@ with _inp_col:
                 'comp_2': safe_float(inputs['inp_comp2']) if not row2_off else None,
                 'w_comp': safe_float(inputs['inp_wcomp']) if not row2_off else None,
             }
+            # ── DEP M/E counter lock enforcement (server-side) ──
+            if (inputs['inp_event'] == 'DEPARTURE'
+                    and _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes'):
+                _sav_prev = _get_prev_event_for_dep(st.session_state.editing_id)
+                if _sav_prev:
+                    event_data['me_rev_c'] = safe_int(fmt_field('me_rev_c', _sav_prev.get('me_rev_c')))
+                    event_data['main_flmtr'] = safe_float(fmt_field('main_flmtr', _sav_prev.get('main_flmtr')))
+                    event_data['cyl_oil_count'] = safe_int(fmt_field('cyl_oil_count', _sav_prev.get('cyl_oil_count')))
+                    event_data['me_pwrmtr'] = safe_float(fmt_field('me_pwrmtr', _sav_prev.get('me_pwrmtr')))
+                    event_data['me_hrs'] = safe_float(fmt_field('me_hrs', _sav_prev.get('me_hrs')))
             if st.session_state.editing_id:
                 update_event(st.session_state.editing_id, event_data)
                 with st.spinner(f"Recalculating chain from ID {st.session_state.editing_id}…"):
@@ -2787,6 +2984,9 @@ with _func_col:
     else:
         st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
         st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+    if st.button("Settings", use_container_width=True, key="_settings_btn"):
+        st.session_state.show_settings = not st.session_state.get('show_settings', False)
+        st.rerun()
 
     if st.session_state.confirm_delete and st.session_state.editing_id:
         del_id = st.session_state.editing_id
@@ -2807,6 +3007,58 @@ with _func_col:
         with dc2:
             if st.button("NO", use_container_width=True, key="confirm_no"):
                 st.session_state.confirm_delete = False
+                st.rerun()
+
+# ---- SETTINGS PANEL ----
+_app_settings_now = _load_app_settings()
+with _settings_col:
+    if st.session_state.get('show_settings', False):
+        with st.form("settings_form"):
+            st.markdown('<div class="card-header-right">SETTINGS</div>', unsafe_allow_html=True)
+
+            st.markdown('<div style="font-size:13px;font-weight:600;color:#2c3e50;margin:6px 0 3px 0;">Does DEP stop M/E counters?</div>', unsafe_allow_html=True)
+            _dep_idx = 0 if _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes' else 1
+            _dep_choice = st.radio(
+                "dep_me_counters",
+                ["Yes", "No"],
+                index=_dep_idx,
+                horizontal=True,
+                label_visibility="collapsed",
+                key="sett_dep_radio"
+            )
+
+            st.markdown('<div style="font-size:13px;font-weight:600;color:#2c3e50;margin:8px 0 3px 0;">Boiler fuel consumption</div>', unsafe_allow_html=True)
+            _blr_idx = 1 if _app_settings_now.get('boiler_fuel_mode', 'flowmeter') == 'user_defined' else 0
+            _blr_choice = st.radio(
+                "boiler_mode",
+                ["Flowmeter", "User Defined [mt/h]"],
+                index=_blr_idx,
+                horizontal=True,
+                label_visibility="collapsed",
+                key="sett_blr_radio"
+            )
+            _blr_rate_val = float(_app_settings_now.get('boiler_user_defined_rate') or 0.0)
+            _blr_rate = st.number_input(
+                "Rate [mt/h]:",
+                value=_blr_rate_val,
+                min_value=0.0,
+                step=0.0001,
+                format="%.4f",
+                key="sett_blr_rate"
+            )
+
+            _save_settings = st.form_submit_button("Save and Exit", type="primary", use_container_width=True)
+
+        if _save_settings:
+            _new_settings = {
+                'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
+                'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
+                'boiler_user_defined_rate': float(_blr_rate),
+            }
+            if not _save_app_settings(_new_settings):
+                st.error("Failed to save settings (check file permissions).")
+            else:
+                st.session_state.show_settings = False
                 st.rerun()
 
 # ============ LEFT BAR (Sidebar) - Events Logbook ============

@@ -19,6 +19,11 @@
     "right": 19,
     "locked": false
   },
+  "settings_panel": {
+    "top": 640,
+    "right": 230,
+    "locked": false
+  },
   "me_sfoc_chart": {
     "top": 440,
     "right": 500,
