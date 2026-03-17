@@ -519,7 +519,7 @@ def _compute_calculated_values(present, previous):
             calc['dg_do_acc_cons']  = round(do_cor_total * dg_do_cal  / do_cal_sum, 2)
             calc['blr_do_acc_cons'] = round(do_cor_total * blr_do_cal / do_cal_sum, 2)
         else:
-            # No calculated DO consumption — assign to first DO device found
+            # No calculated DO consumption — assign to first DO device or ME as fallback
             calc['me_do_acc_cons']  = 0.0
             calc['dg_do_acc_cons']  = 0.0
             calc['blr_do_acc_cons'] = 0.0
@@ -529,6 +529,9 @@ def _compute_calculated_values(present, previous):
                 calc['dg_do_acc_cons'] = do_cor_total
             elif calc['blr_fo_set'] == 'DO':
                 calc['blr_do_acc_cons'] = do_cor_total
+            else:
+                # Fallback: no device set to DO but corrected DO entered — assign to ME so ROB is always reduced
+                calc['me_do_acc_cons'] = do_cor_total
     else:
         calc['me_do_acc_cons']  = me_do_cal
         calc['dg_do_acc_cons']  = dg_do_cal
@@ -2358,14 +2361,14 @@ with _eco_col:
         ]:
             _sec1_rows += (
                 f'<tr><td class="el">{_lbl}</td><td class="ev">{_ov_time(_rk)}</td>'
-                f'<td class="ev">{_hv}</td>'
-                f'<td class="ev">{_dv}</td></tr>'
+                f'<td class="ev hfo-cell">{_hv}</td>'
+                f'<td class="ev do-cell">{_dv}</td></tr>'
             )
         # ST_TIME row with HFO/DO totals
         _sec1_rows += (
             f'<tr><td class="el">ST_TIME</td><td class="ev">{_ov_time("st_time")}</td>'
-            f'<td class="ev">{_hfo_total_s}</td>'
-            f'<td class="ev">{_do_total_s}</td></tr>'
+            f'<td class="ev hfo-cell">{_hfo_total_s}</td>'
+            f'<td class="ev do-cell">{_do_total_s}</td></tr>'
         )
 
         _sec2_rows = ''
@@ -2377,8 +2380,8 @@ with _eco_col:
         ]:
             _sec2_rows += (
                 f'<tr><td class="el">{_ll}</td><td class="ev">{_ov(_lk, _ld)}</td>'
-                f'<td class="el">{_rl}</td>'
-                f'<td class="ev">{_ov(_rk2, _rd) if _rk2 else ""}</td></tr>'
+                f'<td class="el oil-lbl">{_rl}</td>'
+                f'<td class="ev oil-cell">{_ov(_rk2, _rd) if _rk2 else ""}</td></tr>'
             )
 
         _sec3_rows = ''
@@ -2388,9 +2391,15 @@ with _eco_col:
             ('TTL', None,      0, 'D/G SYS', 'dg_sys_rob', 2),
         ]:
             _lv = _ov(_lk, _ld) if _lk else _ttl_rob_s
+            if _ll == 'HFO':
+                _l_cls, _v_cls = 'el hfo-lbl', 'ev hfo-cell'
+            elif _ll == 'DO':
+                _l_cls, _v_cls = 'el do-lbl', 'ev do-cell'
+            else:
+                _l_cls, _v_cls = 'el', 'ev'
             _sec3_rows += (
-                f'<tr><td class="el">{_ll}</td><td class="ev">{_lv}</td>'
-                f'<td class="el">{_rl}</td><td class="ev">{_ov(_rk2, _rd)}</td></tr>'
+                f'<tr><td class="{_l_cls}">{_ll}</td><td class="{_v_cls}">{_lv}</td>'
+                f'<td class="el oil-lbl">{_rl}</td><td class="ev oil-cell">{_ov(_rk2, _rd)}</td></tr>'
             )
 
         _tbl_lf = _eco_s.get('table_label_font','11px')
@@ -2406,6 +2415,12 @@ with _eco_col:
         .ect .sub {{background:#ecf0f1;color:#2c3e50;font-weight:600;font-size:{_tbl_hf};text-align:center;}}
         .ect .el {{background:#f0f4f8;color:#2c3e50;font-weight:600;font-size:{_tbl_lf};text-align:right;white-space:nowrap;border:1px solid #dde;width:{_tbl_lw};}}
         .ect .ev {{background:#eaf2fb;color:#2c3e50;font-weight:600;font-size:{_tbl_vf};text-align:center;border:1px solid #b8d4f0;width:{_tbl_vw};}}
+        .ect .hfo-lbl {{background:#e8c99a;border-color:#c9a06a;}}
+        .ect .hfo-cell {{background:#f5deb3;border-color:#c9a06a;}}
+        .ect .do-lbl {{background:#f5d48f;border-color:#d4a030;}}
+        .ect .do-cell {{background:#ffe4b5;border-color:#d4a030;}}
+        .ect .oil-lbl {{background:#a8d4f0;border-color:#5a9ec9;}}
+        .ect .oil-cell {{background:#cce5ff;border-color:#5a9ec9;}}
         </style>
         <table class="ect">
             <tr><td class="sh" colspan="2">TOTAL RHS</td><td class="sh" colspan="2">FUEL CONSUMPTION</td></tr>
@@ -2433,6 +2448,10 @@ with _eci_col:
         st.markdown(f'<div class="card-header-right">{_eci_title}</div>', unsafe_allow_html=True)
         st.markdown('<table class="ect"><tr><td class="sh" colspan="4">CORRECTED CONSUMPTION</td></tr></table>', unsafe_allow_html=True)
         _corr_vals = {}
+        _ec_bg = {'HFO': '#f5deb3', 'DO': '#ffe4b5', 'M/E SYS': '#cce5ff', 'M/E CYL': '#cce5ff', 'D/G SYS': '#cce5ff'}
+        def _ec_lbl_style(lbl):
+            bg = _ec_bg.get(lbl, '')
+            return f' style="background:{bg};border-color:{bg};"' if bg else ''
         _corr_rows = [
             ('HFO', 'me_hfo_cor_cons', 'M/E SYS', 'me_sys_cor_cons'),
             ('DO', 'me_do_cor_cons', 'M/E CYL', 'me_cyl_cor_cons'),
@@ -2441,7 +2460,7 @@ with _eci_col:
         for _i, (_l1, _k1, _l2, _k2) in enumerate(_corr_rows):
             _c1, _c2, _c3, _c4 = st.columns([1.25, 1, 1.25, 1], gap='small')
             with _c1:
-                st.markdown(f'<div class="ec-lbl">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="ec-lbl"{_ec_lbl_style(_l1)}>{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
             with _c2:
                 if _k1:
                     _corr_vals[_k1] = st.text_input(
@@ -2453,7 +2472,7 @@ with _eci_col:
                 else:
                     st.markdown('<div class="ec-out empty">&nbsp;</div>', unsafe_allow_html=True)
             with _c3:
-                st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="ec-lbl"{_ec_lbl_style(_l2)}>{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _corr_vals[_k2] = st.text_input(
                     _k2,
@@ -2489,7 +2508,7 @@ with _eci_col:
                 else:
                     st.markdown('<div class="ec-out empty">&nbsp;</div>', unsafe_allow_html=True)
             with _c3:
-                st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="ec-lbl"{_ec_lbl_style(_l2)}>{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _fuel_vals[_k2] = st.text_input(
                     _k2,
@@ -2780,13 +2799,27 @@ with _inp_col:
             st.warning("No event selected to delete. Click an event ID in the logbook first.")
 
 with _func_col:
-    st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-    _fp_ok, _fp_url = _ensure_elcalc_server()
-    if _fp_ok:
-        st.link_button("Fuel plan", _fp_url, use_container_width=True)
-    else:
-        st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
-        st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+    with st.form(f"functions_panel_form{_key_suffix}"):
+        st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
+        _fp_ok, _fp_url = _ensure_elcalc_server()
+        if _fp_ok:
+            st.markdown(
+                f'<a href="{_fp_url}" target="_blank" rel="noopener noreferrer" '
+                f'style="display:block;width:100%;padding:4px 10px;background:#1f77b4;color:#fff;'
+                f'font-size:13px;font-weight:600;text-align:center;border-radius:4px;'
+                f'text-decoration:none;box-sizing:border-box;">Fuel Plan</a>',
+                unsafe_allow_html=True
+            )
+        else:
+            st.markdown(
+                '<div style="display:block;width:100%;padding:4px 10px;background:#bbb;color:#fff;'
+                'font-size:13px;font-weight:600;text-align:center;border-radius:4px;'
+                'cursor:not-allowed;">Fuel Plan</div>',
+                unsafe_allow_html=True
+            )
+            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+        # Hidden dummy submit (form requires one)
+        st.form_submit_button("_", disabled=True, type="secondary")
 
     if st.session_state.confirm_delete and st.session_state.editing_id:
         del_id = st.session_state.editing_id
