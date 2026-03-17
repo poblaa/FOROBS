@@ -529,6 +529,10 @@ def _compute_calculated_values(present, previous):
                 calc['dg_do_acc_cons'] = do_cor_total
             elif calc['blr_fo_set'] == 'DO':
                 calc['blr_do_acc_cons'] = do_cor_total
+            else:
+                # No device explicitly set to DO — assign to DG as default DO consumer
+                # (DGs are the typical DO consumers; mirrors how HFO defaults to ME)
+                calc['dg_do_acc_cons'] = do_cor_total
     else:
         calc['me_do_acc_cons']  = me_do_cal
         calc['dg_do_acc_cons']  = dg_do_cal
@@ -3230,13 +3234,15 @@ with st.sidebar:
                     _dg3_do = round(_dg3_do_raw * _do_scale, 2)
                     _blr_do = round(_blr_do_raw * _do_scale, 2)
                 elif _do_cons > 0:
-                    _sum_rhs_all = _rhs['ME'] + _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'] + _rhs['BLR']
-                    if _sum_rhs_all > 0:
-                        _me_do = round(_do_cons * _rhs['ME'] / _sum_rhs_all, 2)
-                        _dg1_do = round(_do_cons * _rhs['DG1'] / _sum_rhs_all, 2)
-                        _dg2_do = round(_do_cons * _rhs['DG2'] / _sum_rhs_all, 2)
-                        _dg3_do = round(_do_cons * _rhs['DG3'] / _sum_rhs_all, 2)
-                        _blr_do = round(_do_cons * _rhs['BLR'] / _sum_rhs_all, 2)
+                    # Fallback: distribute DO only to DGs (primary DO consumers),
+                    # proportional to DG running hours — ME does not consume DO
+                    _dg_rhs_for_do = _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3']
+                    if _dg_rhs_for_do > 0:
+                        _me_do = 0.0
+                        _blr_do = 0.0
+                        _dg1_do = round(_do_cons * _rhs['DG1'] / _dg_rhs_for_do, 2)
+                        _dg2_do = round(_do_cons * _rhs['DG2'] / _dg_rhs_for_do, 2)
+                        _dg3_do = round(_do_cons * _rhs['DG3'] / _dg_rhs_for_do, 2)
                     else:
                         _me_do = _dg1_do = _dg2_do = _dg3_do = _blr_do = 0.0
                 else:
