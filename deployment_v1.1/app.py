@@ -2755,7 +2755,7 @@ with _eci_col:
 _card_title = f"INPUT CARD  ID_{st.session_state.editing_id}" if st.session_state.editing_id else "INPUT CARD  (new)"
 
 with _inp_col:
-    with st.container():
+    with st.form(f"input_card_form{_key_suffix}"):
         st.markdown(f'<div class="card-header-right">{_card_title}</div>', unsafe_allow_html=True)
 
         # Inject DEP lock data for JavaScript
@@ -2845,9 +2845,9 @@ with _inp_col:
                 # else: right side reserved for MID events only — leave c3/c4 empty
             elif i == 19:
                 with c3:
-                    submitted = st.button("SAVE", type="primary", use_container_width=True, key=f"save_btn{_key_suffix}")
+                    submitted = st.form_submit_button("SAVE", type="primary", use_container_width=True)
                 with c4:
-                    delete_clicked = st.button("DEL", use_container_width=True, key=f"del_btn{_key_suffix}")
+                    delete_clicked = st.form_submit_button("DEL", use_container_width=True)
 
     # ---- INPUT CARD: SAVE / DELETE handlers (inside right column) ----
     if submitted:
