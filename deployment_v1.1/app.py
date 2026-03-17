@@ -2271,7 +2271,6 @@ _eco_col = st.container()
 _eci_col = st.container()
 _inp_col = st.container()
 _func_col = st.container()
-_settings_col = st.container()
 _me_chart_col = st.container()
 _dg_chart_col = st.container()
 
@@ -2808,6 +2807,10 @@ with _inp_col:
         ]
 
         inputs = {}
+        # Pre-populate row2 field keys with empty defaults (right side is MID-only;
+        # if not rendered the save handler still needs these keys in the dict)
+        for _, _r2k, _ in row2_fields:
+            inputs[_r2k] = ''
 
         for i in range(20):
             c1, c2, c3, c4 = st.columns([1.2, 1, 1.2, 1])
@@ -2829,10 +2832,13 @@ with _inp_col:
 
             if i < len(row2_fields):
                 r2_label, r2_key, r2_val = row2_fields[i]
-                with c3:
-                    st.markdown(f'<div class="card-row2-label">{r2_label}</div>', unsafe_allow_html=True)
-                with c4:
-                    inputs[r2_key] = st.text_input(r2_label, value=r2_val, key=r2_key + _key_suffix, label_visibility="collapsed")
+                if not row2_disabled:
+                    # MID event: show right-side fields normally
+                    with c3:
+                        st.markdown(f'<div class="card-row2-label">{r2_label}</div>', unsafe_allow_html=True)
+                    with c4:
+                        inputs[r2_key] = st.text_input(r2_label, value=r2_val, key=r2_key + _key_suffix, label_visibility="collapsed")
+                # else: right side reserved for MID events only — leave c3/c4 empty
             elif i == 19:
                 with c3:
                     submitted = st.form_submit_button("SAVE", type="primary", use_container_width=True)
@@ -2891,12 +2897,14 @@ with _inp_col:
             ('inp_blr_hrs', 'BOILER HRS'),
         ]
         for fkey, flabel in hrs_field_map:
-            val = str(inputs[fkey]).strip()
+            val = str(inputs[fkey]).strip().replace(',', '.')
             if val:
                 if _re.match(r'^\d+$', val):
                     inputs[fkey] = val + '.00'
-                elif not _re.match(r'^\d+\.\d{2}$', val):
-                    errors.append(f"{flabel}: format XX.XX (e.g. 123.06) or whole number")
+                elif _re.match(r'^\d+\.\d+$', val):
+                    inputs[fkey] = val  # normalise comma→dot
+                else:
+                    errors.append(f"{flabel}: decimal format required (e.g. 12.2, 123.56, 91.90) or whole number")
 
         is_mid = inputs.get('inp_event', 'NOON') == "MID"
         row2_off = not is_mid
@@ -3032,7 +3040,8 @@ def _confirm_delete_dialog():
 if st.session_state.confirm_delete and st.session_state.editing_id:
     _confirm_delete_dialog()
 
-# ---- FUNCTIONS PANEL (floating card) ----
+# ---- FUNCTIONS PANEL (floating card, includes settings) ----
+_app_settings_now = _load_app_settings()
 with _func_col:
     with st.form("functions_panel_form"):
         st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
@@ -3055,62 +3064,61 @@ with _func_col:
                 unsafe_allow_html=True
             )
             st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
-        _settings_submitted = st.form_submit_button("⚙ Settings", use_container_width=True)
-    if _settings_submitted:
-        st.session_state.show_settings = not st.session_state.get('show_settings', False)
-        st.rerun()
 
-# ---- SETTINGS PANEL ----
-_app_settings_now = _load_app_settings()
-with _settings_col:
-    if st.session_state.get('show_settings', False):
-        with st.form("settings_form"):
-            st.markdown('<div class="card-header-right">SETTINGS</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div style="border-top:1px solid #dde;margin:6px 0 4px 0;'
+            'font-size:12px;font-weight:700;color:#2c3e50;padding-top:5px;">⚙ SETTINGS</div>',
+            unsafe_allow_html=True
+        )
 
-            st.markdown('<div style="font-size:13px;font-weight:600;color:#2c3e50;margin:6px 0 3px 0;">Does DEP stop M/E counters?</div>', unsafe_allow_html=True)
-            _dep_idx = 0 if _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes' else 1
-            _dep_choice = st.radio(
-                "dep_me_counters",
-                ["Yes", "No"],
-                index=_dep_idx,
-                horizontal=True,
-                label_visibility="collapsed",
-                key="sett_dep_radio"
-            )
+        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">Does DEP stop M/E counters?</div>', unsafe_allow_html=True)
+        _dep_idx = 0 if _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes' else 1
+        _dep_choice = st.radio(
+            "dep_me_counters",
+            ["Yes", "No"],
+            index=_dep_idx,
+            horizontal=True,
+            label_visibility="collapsed",
+            key="sett_dep_radio"
+        )
 
-            st.markdown('<div style="font-size:13px;font-weight:600;color:#2c3e50;margin:8px 0 3px 0;">Boiler fuel consumption</div>', unsafe_allow_html=True)
-            _blr_idx = 1 if _app_settings_now.get('boiler_fuel_mode', 'flowmeter') == 'user_defined' else 0
-            _blr_choice = st.radio(
-                "boiler_mode",
-                ["Flowmeter", "User Defined [mt/h]"],
-                index=_blr_idx,
-                horizontal=True,
-                label_visibility="collapsed",
-                key="sett_blr_radio"
-            )
-            _blr_rate_val = float(_app_settings_now.get('boiler_user_defined_rate') or 0.0)
-            _blr_rate = st.number_input(
-                "Rate [mt/h]:",
-                value=_blr_rate_val,
-                min_value=0.0,
-                step=0.0001,
-                format="%.4f",
-                key="sett_blr_rate"
-            )
+        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:6px 0 2px 0;">Boiler fuel consumption</div>', unsafe_allow_html=True)
+        _blr_idx = 1 if _app_settings_now.get('boiler_fuel_mode', 'flowmeter') == 'user_defined' else 0
+        _blr_choice = st.radio(
+            "boiler_mode",
+            ["Flowmeter", "User Defined [mt/h]"],
+            index=_blr_idx,
+            horizontal=True,
+            label_visibility="collapsed",
+            key="sett_blr_radio"
+        )
+        _blr_rate_val = float(_app_settings_now.get('boiler_user_defined_rate') or 0.0)
+        _blr_rate = st.number_input(
+            "Rate [mt/h]:",
+            value=_blr_rate_val,
+            min_value=0.0,
+            step=0.0001,
+            format="%.4f",
+            key="sett_blr_rate"
+        )
 
-            _save_settings = st.form_submit_button("Save and Exit", type="primary", use_container_width=True)
+        _save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
 
-        if _save_settings:
-            _new_settings = {
-                'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
-                'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
-                'boiler_user_defined_rate': float(_blr_rate),
-            }
-            if not _save_app_settings(_new_settings):
-                st.toast("Failed to save settings (check file permissions).", icon="❌")
-            else:
-                st.session_state.show_settings = False
-                st.rerun()
+    if _save_settings:
+        _new_settings = {
+            'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
+            'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
+            'boiler_user_defined_rate': float(_blr_rate),
+        }
+        if not _save_app_settings(_new_settings):
+            st.toast("Failed to save settings (check file permissions).", icon="❌")
+        else:
+            st.session_state['_settings_saved_toast'] = True
+            st.rerun()
+
+# Show settings-saved toast after rerun (so it appears on the fresh render)
+if st.session_state.pop('_settings_saved_toast', False):
+    st.toast("Settings saved!", icon="✅")
 
 # ============ LEFT BAR (Sidebar) - Events Logbook ============
 with st.sidebar:
