@@ -8,6 +8,7 @@ import pandas as pd
 import altair as alt
 import sqlite3
 from datetime import datetime
+import html as _html
 import os
 import json
 import time
@@ -2785,9 +2786,22 @@ with _func_col:
         st.markdown('<div class="card-header-right">MENU</div>', unsafe_allow_html=True)
         _fp_ok, _fp_url = _ensure_elcalc_server()
         if _fp_ok:
-            st.link_button("Fuel plan", _fp_url, use_container_width=True)
+            # st.link_button is not allowed inside st.form — use HTML link instead
+            st.markdown(
+                f'<a href="{_html.escape(_fp_url)}" target="_blank" style="display:block;text-align:center;'
+                'padding:5px 8px;background:#0e1117;color:#fff;border-radius:4px;'
+                'text-decoration:none;font-size:14px;font-weight:600;border:1px solid #555;">'
+                'Fuel plan</a>',
+                unsafe_allow_html=True,
+            )
         else:
-            st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
+            st.markdown(
+                '<div style="display:block;text-align:center;padding:5px 8px;'
+                'background:#262730;color:#888;border-radius:4px;font-size:14px;'
+                'font-weight:600;border:1px solid #444;cursor:not-allowed;">'
+                'Fuel plan</div>',
+                unsafe_allow_html=True,
+            )
             st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
         # Dummy submit button required by Streamlit forms (kept disabled/hidden)
         st.form_submit_button('_', disabled=True, type='secondary')
