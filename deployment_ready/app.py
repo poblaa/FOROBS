@@ -342,6 +342,10 @@ def delete_event(event_id: int):
     for new_id, (old_id,) in enumerate(rows, start=1):
         if old_id != new_id:
             c.execute("UPDATE events SET id = ? WHERE id = ?", (new_id, old_id))
+    # Reset the AUTOINCREMENT counter so the next INSERT continues from new_max+1
+    # (without this, SQLite keeps the old max and creates a gap on the next insert)
+    new_max = len(rows)
+    c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (new_max,))
     conn.commit()
     conn.close()
     invalidate_events_cache()
