@@ -443,7 +443,8 @@ def _compute_calculated_values(present, previous):
     calc['avg_rpm'] = round(max(rev_diff, 0) / me_diff_minutes, 2) if me_diff_minutes > 0 else 0.0
     calc['ttl_rpm'] = round(max(rev_diff, 0), 2)
 
-    calc['me_cyl_calc_cons'] = round(max(_g(present, 'cyl_oil_count') - _g(previous, 'cyl_oil_count'), 0), 2)
+    _event_duration_hours = delta_minutes / 60.0
+    calc['me_cyl_calc_cons'] = round(max(calc['avg_pwr'] * 0.7 / 1000.0 * _event_duration_hours, 0), 2)
     calc['me_sys_calc_cons'] = _g(present, 'me_sys_calc_cons')
     calc['dg_sys_calc_cons'] = _g(present, 'dg_sys_calc_cons')
 
@@ -1951,7 +1952,7 @@ _card_pos_js = """<script>
         var main = doc.querySelector('section[data-testid="stMain"]');
         if (!main) return false;
         var forms = main.querySelectorAll('[data-testid="stForm"]');
-        if (forms.length < 5) return false;
+        if (forms.length < 6) return false;
         var pos = loadPos(), ok = 0;
         for (var i = 0; i < forms.length; i++) {
             var h = forms[i].querySelector('.card-header-right');
@@ -1960,7 +1961,7 @@ _card_pos_js = """<script>
             if (t.indexOf('EVENT OUTPUT') >= 0) { setupCard(forms[i], 'event_card_output', pos); ok++; }
             else if (t.indexOf('EVENT INPUT') >= 0) { setupCard(forms[i], 'event_card_input', pos); ok++; }
             else if (t.indexOf('INPUT CARD') >= 0) { setupCard(forms[i], 'input_card', pos); ok++; }
-            else if (t.indexOf('FUNCTIONS PANEL') >= 0) { setupCard(forms[i], 'functions_panel', pos); ok++; }
+            else if (t.indexOf('MENU') >= 0) { setupCard(forms[i], 'functions_panel', pos); ok++; }
             else if (t.indexOf('ME SFOC CHART') >= 0 || t.indexOf('SFOC [g/kWh]') >= 0 || t.indexOf('ME SFOC [g/kWh]') >= 0) { setupCard(forms[i], 'me_sfoc_chart', pos); ok++; }
             else if (t.indexOf('DG CONSUMPTION CHART') >= 0 || t.indexOf('DG [mT/h]') >= 0) { setupCard(forms[i], 'dg_chart', pos); ok++; }
         }
@@ -2780,13 +2781,16 @@ with _inp_col:
             st.warning("No event selected to delete. Click an event ID in the logbook first.")
 
 with _func_col:
-    st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-    _fp_ok, _fp_url = _ensure_elcalc_server()
-    if _fp_ok:
-        st.link_button("Fuel plan", _fp_url, use_container_width=True)
-    else:
-        st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
-        st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+    with st.form("functions_panel_form"):
+        st.markdown('<div class="card-header-right">MENU</div>', unsafe_allow_html=True)
+        _fp_ok, _fp_url = _ensure_elcalc_server()
+        if _fp_ok:
+            st.link_button("Fuel plan", _fp_url, use_container_width=True)
+        else:
+            st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
+            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+        # Dummy submit button required by Streamlit forms (kept disabled/hidden)
+        st.form_submit_button('_', disabled=True, type='secondary')
 
     if st.session_state.confirm_delete and st.session_state.editing_id:
         del_id = st.session_state.editing_id
@@ -3019,7 +3023,7 @@ with st.sidebar:
         selection = st.dataframe(
             styled_df,
             hide_index=True,
-            use_container_width=True,
+            width='stretch',
             height=420,
             column_config=_col_cfg,
             on_select="rerun",
