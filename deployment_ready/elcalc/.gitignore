@@ -1,9 +1,0 @@
-# Lock files
-.~lock.*
-
-# Instructions (internal development docs)
-instructions
-chart window instructions
-
-# Development folders
-windows-alpha/
