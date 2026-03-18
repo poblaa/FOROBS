@@ -225,7 +225,7 @@ def ensure_seed_event():
     c.execute("SELECT id, place, blr_fo_set FROM events WHERE id = 1")
     row = c.fetchone()
     if row is not None and row[1] == 'SEED':
-        # One-time migration: update blr_fo_set to DO if it was set to HFO (the old default)
+        # One-time migration: update blr_fo_set to DO if it is not already DO
         if row[2] != 'DO':
             c.execute("UPDATE events SET blr_fo_set = 'DO' WHERE id = 1")
             conn.commit()
@@ -377,6 +377,11 @@ def delete_event(event_id: int):
     for new_id, (old_id,) in enumerate(rows, start=1):
         if old_id != new_id:
             c.execute("UPDATE events SET id = ? WHERE id = ?", (new_id, old_id))
+    conn.commit()
+    # Reset AUTOINCREMENT sequence to current max so the next INSERT gets the
+    # correct sequential ID (UPDATE statements above do not touch sqlite_sequence).
+    max_id = c.execute("SELECT MAX(id) FROM events").fetchone()[0] or 0
+    c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (max_id,))
     conn.commit()
     conn.close()
     invalidate_events_cache()
@@ -787,8 +792,12 @@ def calculate_event(event_id):
         return
     present = dict(row)
 
-    prev_id = max(event_id - 1, 1)
-    prev_row = conn.execute("SELECT * FROM events WHERE id = ?", (prev_id,)).fetchone()
+    # Find the actual previous event by ordering; do NOT assume id = event_id - 1
+    # because delete + renumber can leave a gap in the AUTOINCREMENT sequence.
+    prev_row = conn.execute(
+        "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
+        (event_id,)
+    ).fetchone()
     if prev_row is None:
         conn.close()
         return
@@ -805,23 +814,32 @@ def calculate_event(event_id):
 
 def recalculate_chain(from_id):
     """Recalculate all events from from_id onward in a single batch transaction."""
-    start_id = max(int(from_id) - 1, 1)
     conn = get_connection()
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM events WHERE id >= ? ORDER BY id ASC",
-        (start_id,)
-    ).fetchall()
 
-    if len(rows) <= 1:
+    # Find the actual previous event by ordering; do NOT assume id = from_id - 1
+    # because delete + renumber can leave a gap in the AUTOINCREMENT sequence.
+    prev_row = conn.execute(
+        "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
+        (int(from_id),)
+    ).fetchone()
+    if prev_row is None:
+        conn.close()
+        return
+
+    chain_rows = conn.execute(
+        "SELECT * FROM events WHERE id >= ? ORDER BY id ASC",
+        (int(from_id),)
+    ).fetchall()
+    if not chain_rows:
         conn.close()
         return
 
     updates = []
-    previous = dict(rows[0])
+    previous = dict(prev_row)
     calc_keys = None
 
-    for row in rows[1:]:
+    for row in chain_rows:
         present = dict(row)
         calc = _compute_calculated_values(present, previous)
         if calc_keys is None:
@@ -2692,7 +2710,7 @@ with _eci_col:
             with _c2:
                 if _k1 and _k1 in _c2_fo_keys:
                     _fo_cur = str(c2_def.get(_k1, _c2_fo_defaults[_k1]))
-                    _fo_idx = _fo_options.index(_fo_cur) if _fo_cur in _fo_options else _fo_options.index(_c2_fo_defaults[_k1])
+                    _fo_idx = _fo_options.index(_fo_cur) if _fo_cur in _fo_options else (_fo_options.index(_c2_fo_defaults[_k1]) if _c2_fo_defaults[_k1] in _fo_options else 0)
                     _fuel_vals[_k1] = st.selectbox(
                         _k1,
                         options=_fo_options,
