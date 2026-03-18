@@ -258,7 +258,7 @@ st.caption("Simple import menu: Input DB → Source Excel → Date range → Imp
 
 workspace_dir = os.path.dirname(os.path.abspath(__file__))
 db_files = list_db_files(workspace_dir)
-local_source_path = os.path.join(workspace_dir, "OLD_LOGBOOK.xlsx")
+local_source_path = os.path.join(workspace_dir, "LOGBOOK.xlsx")
 
 st.subheader("1) Input Database")
 if db_files:
@@ -274,18 +274,18 @@ db_path = custom_db_path.strip() if custom_db_path.strip() else (os.path.join(wo
 st.subheader("2) Source Excel")
 source_mode = st.radio(
     "Source mode",
-    options=["Use local OLD_LOGBOOK.xlsx", "Upload source file"],
+    options=["Use local LOGBOOK.xlsx", "Upload source file"],
     horizontal=True,
 )
 
 source_bytes = None
-if source_mode == "Use local OLD_LOGBOOK.xlsx":
+if source_mode == "Use local LOGBOOK.xlsx":
     if os.path.isfile(local_source_path):
         st.success(f"Source: {os.path.basename(local_source_path)}")
         with open(local_source_path, "rb") as source_fp:
             source_bytes = source_fp.read()
     else:
-        st.error("Local source file OLD_LOGBOOK.xlsx not found.")
+        st.error("Local source file LOGBOOK.xlsx not found.")
 else:
     source_file = st.file_uploader("Upload source (.xlsx / .xlsm)", type=["xlsx", "xlsm"])
     source_bytes = source_file.read() if source_file else None
