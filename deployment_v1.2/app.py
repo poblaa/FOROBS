@@ -222,9 +222,13 @@ def ensure_seed_event():
     If ID 1 exists but is not the seed, shift all events up by 1 to make room."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, place FROM events WHERE id = 1")
+    c.execute("SELECT id, place, blr_fo_set FROM events WHERE id = 1")
     row = c.fetchone()
     if row is not None and row[1] == 'SEED':
+        # One-time migration: update blr_fo_set to DO if it is not already DO
+        if row[2] != 'DO':
+            c.execute("UPDATE events SET blr_fo_set = 'DO' WHERE id = 1")
+            conn.commit()
         conn.close()
         return  # Seed already in place
     if row is not None:
@@ -247,7 +251,7 @@ def ensure_seed_event():
         # Seed ROBs and settings
         'me_sys_rob': 1.00, 'me_cyl_rob': 1.00, 'dg_sys_rob': 1.00,
         'hfo_rob': 1.00, 'do_rob': 1.00,
-        'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'HFO',
+        'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'DO',
         # Seed diffs / calc values
         'st_time': '00:00', 'me_diff': '00:00', 'dg1_diff': '00:00',
         'dg2_diff': '00:00', 'dg3_diff': '00:00', 'blr_diff': '00:00',
@@ -374,6 +378,11 @@ def delete_event(event_id: int):
         if old_id != new_id:
             c.execute("UPDATE events SET id = ? WHERE id = ?", (new_id, old_id))
     conn.commit()
+    # Reset AUTOINCREMENT sequence to current max so the next INSERT gets the
+    # correct sequential ID (UPDATE statements above do not touch sqlite_sequence).
+    max_id = c.execute("SELECT MAX(id) FROM events").fetchone()[0] or 0
+    c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (max_id,))
+    conn.commit()
     conn.close()
     invalidate_events_cache()
 
@@ -488,9 +497,10 @@ def _compute_calculated_values(present, previous):
     calc['me_cyl_rob'] = round(_g(previous, 'me_cyl_rob') - calc['me_cyl_acc_cons'] + _g(present, 'me_cyl_bnkr'), 2)
     calc['dg_sys_rob'] = round(_g(previous, 'dg_sys_rob') - calc['dg_sys_acc_cons'] + _g(present, 'dg_sys_bnkr'), 2)
 
+    _fo_set_defaults = {'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'DO'}
     for fs in ['me_fo_set', 'dg_fo_set', 'blr_fo_set']:
         val = present.get(fs)
-        calc[fs] = (previous.get(fs) or 'HFO') if (not val or val == 'None') else val
+        calc[fs] = (previous.get(fs) or _fo_set_defaults[fs]) if (not val or val == 'None') else val
 
     me_flmtr_diff = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
     calc['me_hfo_calc_cons'] = round((me_flmtr_diff * 0.919) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
@@ -782,8 +792,12 @@ def calculate_event(event_id):
         return
     present = dict(row)
 
-    prev_id = max(event_id - 1, 1)
-    prev_row = conn.execute("SELECT * FROM events WHERE id = ?", (prev_id,)).fetchone()
+    # Find the actual previous event by ordering; do NOT assume id = event_id - 1
+    # because delete + renumber can leave a gap in the AUTOINCREMENT sequence.
+    prev_row = conn.execute(
+        "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
+        (event_id,)
+    ).fetchone()
     if prev_row is None:
         conn.close()
         return
@@ -800,23 +814,32 @@ def calculate_event(event_id):
 
 def recalculate_chain(from_id):
     """Recalculate all events from from_id onward in a single batch transaction."""
-    start_id = max(int(from_id) - 1, 1)
     conn = get_connection()
     conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM events WHERE id >= ? ORDER BY id ASC",
-        (start_id,)
-    ).fetchall()
 
-    if len(rows) <= 1:
+    # Find the actual previous event by ordering; do NOT assume id = from_id - 1
+    # because delete + renumber can leave a gap in the AUTOINCREMENT sequence.
+    prev_row = conn.execute(
+        "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
+        (int(from_id),)
+    ).fetchone()
+    if prev_row is None:
+        conn.close()
+        return
+
+    chain_rows = conn.execute(
+        "SELECT * FROM events WHERE id >= ? ORDER BY id ASC",
+        (int(from_id),)
+    ).fetchall()
+    if not chain_rows:
         conn.close()
         return
 
     updates = []
-    previous = dict(rows[0])
+    previous = dict(prev_row)
     calc_keys = None
 
-    for row in rows[1:]:
+    for row in chain_rows:
         present = dict(row)
         calc = _compute_calculated_values(present, previous)
         if calc_keys is None:
@@ -2458,6 +2481,7 @@ def _ov_time(key):
 
 # Build input-field defaults
 _c2_fo_keys = ['me_fo_set', 'dg_fo_set', 'blr_fo_set']
+_c2_fo_defaults = {'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'DO'}
 _c2_input_keys = ['me_hfo_cor_cons', 'me_do_cor_cons',
                   'me_sys_cor_cons', 'me_cyl_cor_cons', 'dg_sys_cor_cons',
                   'hfo_bnkr', 'do_bnkr', 'me_sys_bnkr', 'me_cyl_bnkr', 'dg_sys_bnkr',
@@ -2466,12 +2490,12 @@ c2_def = {}
 if _can_edit:
     for k in _c2_fo_keys:
         v = _ev.get(k)
-        c2_def[k] = str(v) if v and v != 'None' else 'HFO'
+        c2_def[k] = str(v) if v and v != 'None' else _c2_fo_defaults[k]
     for k in _c2_input_keys:
         c2_def[k] = _fmt_c2(_ev.get(k))
 else:
     for k in _c2_fo_keys:
-        c2_def[k] = 'HFO'
+        c2_def[k] = _c2_fo_defaults[k]
     for k in _c2_input_keys:
         c2_def[k] = ''
 
@@ -2677,16 +2701,20 @@ with _eci_col:
             ('', None, 'D/G SYS', 'dg_sys_bnkr'),
         ]
         _bunkered_lbl_cls = {'HFO': 'ec-lbl ec-lbl-hfo', 'DO': 'ec-lbl ec-lbl-do'}
+        _fo_options = ['HFO', 'DO']
         for _i, (_l1, _k1, _l2, _k2) in enumerate(_fuel_rows):
             _lbl2_cls = _bunkered_lbl_cls.get(_l2, 'ec-lbl ec-lbl-oil' if _l2 in _lbl_oil_labels else 'ec-lbl')
             _c1, _c2, _c3, _c4 = st.columns([1.25, 1, 1.25, 1], gap='small')
             with _c1:
                 st.markdown(f'<div class="ec-lbl">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
             with _c2:
-                if _k1:
-                    _fuel_vals[_k1] = st.text_input(
+                if _k1 and _k1 in _c2_fo_keys:
+                    _fo_cur = str(c2_def.get(_k1, _c2_fo_defaults[_k1]))
+                    _fo_idx = _fo_options.index(_fo_cur) if _fo_cur in _fo_options else (_fo_options.index(_c2_fo_defaults[_k1]) if _c2_fo_defaults[_k1] in _fo_options else 0)
+                    _fuel_vals[_k1] = st.selectbox(
                         _k1,
-                        value=str(c2_def.get(_k1, '')),
+                        options=_fo_options,
+                        index=_fo_idx,
                         key=f'c2_fuel_{_k1}_{_i}{_key_suffix}',
                         label_visibility='collapsed'
                     )
@@ -2708,17 +2736,10 @@ with _eci_col:
 
     # Event Card save handler
     if c2_submitted and _eid and _eid > 1:
-        # DEBUG: log raw _fuel_vals to file
-        import json as _dbg_json
-        _dbg_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'forobs_debug.log')
-        with open(_dbg_log_path, 'a') as _df:
-            _df.write(f"\n=== SAVE EVENT CARD for ID {_eid} ===\n")
-            _df.write(f"_fuel_vals = {_dbg_json.dumps({k: repr(v) for k,v in _fuel_vals.items()})}\n")
-            _df.write(f"_corr_vals = {_dbg_json.dumps({k: repr(v) for k,v in _corr_vals.items()})}\n")
         c2_data = {
             'me_fo_set':        str(_fuel_vals.get('me_fo_set', 'HFO')),
             'dg_fo_set':        str(_fuel_vals.get('dg_fo_set', 'HFO')),
-            'blr_fo_set':       str(_fuel_vals.get('blr_fo_set', 'HFO')),
+            'blr_fo_set':       str(_fuel_vals.get('blr_fo_set', 'DO')),
             'me_sys_calc_cons': safe_float(c2_def.get('me_sys_calc_cons', 0)),
             'dg_sys_calc_cons': safe_float(c2_def.get('dg_sys_calc_cons', 0)),
             'me_sys_cor_cons':  safe_float(_corr_vals.get('me_sys_cor_cons', 0)),
@@ -2732,9 +2753,6 @@ with _eci_col:
             'me_cyl_bnkr':      safe_float(_fuel_vals.get('me_cyl_bnkr', 0)),
             'dg_sys_bnkr':      safe_float(_fuel_vals.get('dg_sys_bnkr', 0)),
         }
-        # DEBUG: log c2_data
-        with open(_dbg_log_path, 'a') as _df:
-            _df.write(f"c2_data = {_dbg_json.dumps({k: repr(v) for k,v in c2_data.items()})}\n")
         update_event(_eid, c2_data)
         with st.spinner(f"Recalculating chain from ID {_eid}…"):
             recalculate_chain(_eid)
@@ -2742,12 +2760,6 @@ with _eci_col:
             rebuild_chart_data()
         except Exception:
             pass
-        # DEBUG: verify DB after save
-        with open(_dbg_log_path, 'a') as _df:
-            _dbg_conn = get_connection()
-            _dbg_row = _dbg_conn.execute(f"SELECT hfo_bnkr, do_bnkr, me_sys_bnkr FROM events WHERE id = {_eid}").fetchone()
-            _df.write(f"DB after save: hfo_bnkr={_dbg_row[0]}, do_bnkr={_dbg_row[1]}, me_sys_bnkr={_dbg_row[2]}\n")
-            _dbg_conn.close()
         st.success(f"Event Card saved for Event #{_eid}!")
         st.rerun()
 
