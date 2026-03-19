@@ -82,6 +82,8 @@ def _load_app_settings():
         'dep_stops_me_counters': 'no',
         'boiler_fuel_mode': 'flowmeter',
         'boiler_user_defined_rate': 0.0,
+        'hfo_density': 0.919,
+        'do_density': 0.870,
     }
     try:
         if os.path.exists(_APP_SETTINGS_PATH):
@@ -502,28 +504,31 @@ def _compute_calculated_values(present, previous):
         val = present.get(fs)
         calc[fs] = (previous.get(fs) or _fo_set_defaults[fs]) if (not val or val == 'None') else val
 
+    _fo_settings = _load_app_settings()
+    _hfo_density = float(_fo_settings.get('hfo_density') or 0.919)
+    _do_density = float(_fo_settings.get('do_density') or 0.870)
+
     me_flmtr_diff = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
-    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * 0.919) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
-    calc['me_do_calc_cons'] = round((me_flmtr_diff * 0.870) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
+    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * _hfo_density) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
+    calc['me_do_calc_cons'] = round((me_flmtr_diff * _do_density) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
-    _blr_settings = _load_app_settings()
-    _blr_mode = _blr_settings.get('boiler_fuel_mode', 'flowmeter')
+    _blr_mode = _fo_settings.get('boiler_fuel_mode', 'flowmeter')
     if _blr_mode == 'user_defined':
-        _blr_user_rate = float(_blr_settings.get('boiler_user_defined_rate') or 0.0)
+        _blr_user_rate = float(_fo_settings.get('boiler_user_defined_rate') or 0.0)
         _blr_hrs_diff = _decimal_diff_to_decimal_hours(_g(present, 'boiler_hrs'), _g(previous, 'boiler_hrs'))
         _blr_ud_cons = round(_blr_hrs_diff * _blr_user_rate, 4)
         calc['blr_hfo_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'HFO' else 0.0
         calc['blr_do_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'DO' else 0.0
     else:
-        calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * 0.919) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
-        calc['blr_do_calc_cons'] = round((blr_flmtr_diff * 0.870) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
+        calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * _hfo_density) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
+        calc['blr_do_calc_cons'] = round((blr_flmtr_diff * _do_density) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
 
     dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
     dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
     dg_net_diff = max(dg_in_diff - dg_out_diff, 0)
-    calc['dg_hfo_calc_cons'] = round((dg_net_diff * 0.919) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
-    calc['dg_do_calc_cons'] = round((dg_net_diff * 0.870) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
+    calc['dg_hfo_calc_cons'] = round((dg_net_diff * _hfo_density) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
+    calc['dg_do_calc_cons'] = round((dg_net_diff * _do_density) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
 
     # ── HFO / DO corrected consumption: proportional split among ALL devices ──
     # User enters total corrected HFO (me_hfo_cor_cons) and total corrected DO (me_do_cor_cons).
@@ -651,22 +656,25 @@ def _compute_chart_point(ev):
     time_s = str(ev.get('time', ''))
 
     # M/E calculated SFOC: fuel [mT] / ttl_pwr [kWh] * 1_000_000 = g/kWh
-    me_calc_hfo = _g(ev, 'me_hfo_acc_cons')
-    me_calc_do  = _g(ev, 'me_do_acc_cons')
-    me_calc_fuel = me_calc_hfo + me_calc_do  # total ME fuel in mT
+    me_calc_hfo = _g(ev, 'me_hfo_calc_cons')
+    me_calc_do  = _g(ev, 'me_do_calc_cons')
+    me_calc_fuel = me_calc_hfo + me_calc_do  # total ME fuel in mT (from flowmeter)
     ttl_pwr = _g(ev, 'ttl_pwr')
 
     me_sfoc_calc = 0.0
     if ttl_pwr > 0 and me_calc_fuel > 0:
         me_sfoc_calc = round(me_calc_fuel / ttl_pwr * 1_000_000, 2)
 
-    # M/E corrected SFOC
-    me_cor_hfo = _g(ev, 'me_hfo_cor_cons')
-    me_cor_do  = _g(ev, 'me_do_cor_cons')
-    me_cor_fuel = me_cor_hfo + me_cor_do
+    # M/E corrected SFOC (only shown when user has entered a corrected value)
+    me_hfo_cor_input = _g(ev, 'me_hfo_cor_cons')
+    me_do_cor_input  = _g(ev, 'me_do_cor_cons')
     me_sfoc_cor = 0.0
-    if ttl_pwr > 0 and me_cor_fuel > 0:
-        me_sfoc_cor = round(me_cor_fuel / ttl_pwr * 1_000_000, 2)
+    if (me_hfo_cor_input > 0 or me_do_cor_input > 0) and ttl_pwr > 0:
+        me_acc_hfo = _g(ev, 'me_hfo_acc_cons')
+        me_acc_do  = _g(ev, 'me_do_acc_cons')
+        me_acc_fuel = me_acc_hfo + me_acc_do
+        if me_acc_fuel > 0:
+            me_sfoc_cor = round(me_acc_fuel / ttl_pwr * 1_000_000, 2)
 
     # D/G total running time (minutes)
     dg1_min = _hhmm_to_minutes(ev.get('dg1_diff'))
@@ -3117,6 +3125,30 @@ with _func_col:
             key="sett_blr_rate"
         )
 
+        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:6px 0 2px 0;">HFO Density [t/m³]</div>', unsafe_allow_html=True)
+        _hfo_density_val = float(_app_settings_now.get('hfo_density') or 0.919)
+        _hfo_density = st.number_input(
+            "HFO Density:",
+            value=_hfo_density_val,
+            min_value=0.0,
+            step=0.001,
+            format="%.3f",
+            label_visibility="collapsed",
+            key="sett_hfo_density"
+        )
+
+        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:6px 0 2px 0;">DO Density [t/m³]</div>', unsafe_allow_html=True)
+        _do_density_val = float(_app_settings_now.get('do_density') or 0.870)
+        _do_density = st.number_input(
+            "DO Density:",
+            value=_do_density_val,
+            min_value=0.0,
+            step=0.001,
+            format="%.3f",
+            label_visibility="collapsed",
+            key="sett_do_density"
+        )
+
         _save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
 
     if _save_settings:
@@ -3124,6 +3156,8 @@ with _func_col:
             'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
             'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
             'boiler_user_defined_rate': float(_blr_rate),
+            'hfo_density': float(_hfo_density),
+            'do_density': float(_do_density),
         }
         if not _save_app_settings(_new_settings):
             st.toast("Failed to save settings (check file permissions).", icon="❌")
