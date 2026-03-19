@@ -316,6 +316,44 @@ def ensure_root_event():
     conn.close()
 
 
+def set_root_id(new_root_id: int) -> tuple[bool, str]:
+    """Move the ROOT event to a new ID.
+
+    The new ID must be strictly greater than the current maximum non-ROOT event
+    ID so that ROOT stays the highest ID in the table.  Returns (True, '') on
+    success, or (False, reason) when the request is rejected.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    row = c.execute("SELECT id FROM events WHERE place = 'ROOT'").fetchone()
+    if row is None:
+        conn.close()
+        return False, "ROOT event not found."
+    current_root_id = int(row[0])
+    if new_root_id == current_root_id:
+        conn.close()
+        return True, ""  # nothing to do
+    max_non_root = c.execute(
+        "SELECT MAX(id) FROM events WHERE place != 'ROOT'"
+    ).fetchone()
+    max_non_root = (max_non_root[0] if max_non_root and max_non_root[0] is not None else 0)
+    if new_root_id <= max_non_root:
+        conn.close()
+        return False, (
+            f"New ROOT ID ({new_root_id}) must be greater than the current "
+            f"highest event ID ({max_non_root})."
+        )
+    c.execute("BEGIN IMMEDIATE")
+    c.execute("UPDATE events SET id = ? WHERE place = 'ROOT'", (new_root_id,))
+    c.execute(
+        "UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'",
+        (new_root_id,),
+    )
+    conn.commit()
+    conn.close()
+    return True, ""
+
+
 def get_connection():
     """Get database connection"""
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -3210,6 +3248,29 @@ with _func_col:
             key="sett_blr_rate"
         )
 
+        st.markdown(
+            '<div style="border-top:1px solid #dde;margin:6px 0 4px 0;'
+            'font-size:12px;font-weight:700;color:#2c3e50;padding-top:5px;">🔢 ROOT ID</div>',
+            unsafe_allow_html=True
+        )
+        _current_root_id = _get_root_id()
+        st.markdown(
+            f'<div style="font-size:11px;color:#555;margin-bottom:4px;">'
+            f'Current ROOT ID: <b>{_current_root_id if _current_root_id is not None else "—"}</b></div>',
+            unsafe_allow_html=True
+        )
+        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">Set ROOT ID to:</div>', unsafe_allow_html=True)
+        _new_root_id_val = int(_current_root_id) if _current_root_id is not None else 2
+        _new_root_id = st.number_input(
+            "New ROOT ID:",
+            value=_new_root_id_val,
+            min_value=2,
+            step=1,
+            format="%d",
+            label_visibility="collapsed",
+            key="sett_new_root_id"
+        )
+
         _save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
 
     if _save_settings:
@@ -3222,11 +3283,24 @@ with _func_col:
             st.toast("Failed to save settings (check file permissions).", icon="❌")
         else:
             st.session_state['_settings_saved_toast'] = True
+        # Apply ROOT ID change if requested
+        _desired_root_id = int(_new_root_id)
+        _cur_root = _get_root_id()
+        if _desired_root_id != _cur_root:
+            _ok, _err = set_root_id(_desired_root_id)
+            if _ok:
+                st.session_state['_root_id_changed_toast'] = True
+            else:
+                st.toast(f"ROOT ID not changed: {_err}", icon="⚠️")
+        if st.session_state.get('_settings_saved_toast') or st.session_state.get('_root_id_changed_toast'):
+            # Rerun so updated ROOT ID and saved settings are reflected in the UI
             st.rerun()
 
 # Show settings-saved toast after rerun (so it appears on the fresh render)
 if st.session_state.pop('_settings_saved_toast', False):
     st.toast("Settings saved!", icon="✅")
+if st.session_state.pop('_root_id_changed_toast', False):
+    st.toast("ROOT ID updated!", icon="✅")
 
 # ============ LEFT BAR (Sidebar) - Events Logbook ============
 with st.sidebar:
