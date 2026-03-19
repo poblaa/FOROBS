@@ -3423,7 +3423,7 @@ with st.sidebar:
         def _ec_safe_float(v):
             try:
                 f = float(v) if v is not None and v != '' and str(v) != 'None' else 0.0
-                return f
+                return 0.0 if f != f else f  # f != f is True only for NaN
             except (ValueError, TypeError):
                 return 0.0
 
@@ -3456,7 +3456,10 @@ with st.sidebar:
             if val is None or val == 0 or val == 0.0:
                 return '--'
             try:
-                s = f"{float(val):.{decimals}f}".rstrip('0').rstrip('.')
+                f = float(val)
+                if f != f:  # NaN check (NaN != NaN is always True)
+                    return '--'
+                s = f"{f:.{decimals}f}".rstrip('0').rstrip('.')
                 return s if s and s != '0' else '--'
             except (ValueError, TypeError):
                 return '--'
