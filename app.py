@@ -2063,6 +2063,31 @@ _card_pos_js = """<script>
         }
         bar.addEventListener('mousedown', startDrag);
         bar.addEventListener('touchstart', startDrag, {passive: false});
+
+        // For functions_panel: wrap the scrollable body content so drag bar stays pinned
+        if (key === 'functions_panel' && !form.querySelector('.fp-scroll-body')) {
+            var scrollBody = doc.createElement('div');
+            scrollBody.className = 'fp-scroll-body';
+            scrollBody.style.cssText = 'overflow-y:auto;overflow-x:hidden;max-height:70vh;margin:0 -4px;padding:0 4px;';
+            // Collect all direct children that are not the drag bar or resize handle
+            var toMove = [];
+            for (var ci = 0; ci < form.childNodes.length; ci++) {
+                var ch = form.childNodes[ci];
+                if (ch === bar) continue;
+                if (ch.classList && ch.classList.contains('card-resize-handle')) continue;
+                toMove.push(ch);
+            }
+            for (var mi = 0; mi < toMove.length; mi++) {
+                scrollBody.appendChild(toMove[mi]);
+            }
+            // Insert scroll body after drag bar, before resize handle
+            var resizeHandle = form.querySelector('.card-resize-handle');
+            if (resizeHandle) {
+                form.insertBefore(scrollBody, resizeHandle);
+            } else {
+                form.appendChild(scrollBody);
+            }
+        }
     }
 
     function init() {
@@ -3068,29 +3093,9 @@ _app_settings_now = _load_app_settings()
 with _func_col:
     with st.form("functions_panel_form"):
         st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-        _fp_ok, _fp_url = _ensure_elcalc_server()
-        _fp_btn_style = (
-            "display:block;width:100%;text-align:center;padding:6px 12px;"
-            "background:#0e1117;color:white;border-radius:6px;text-decoration:none;"
-            "font-size:14px;font-weight:400;border:1px solid rgba(250,250,250,0.2);"
-            "cursor:pointer;margin-bottom:6px;"
-        )
-        if _fp_ok:
-            st.markdown(
-                f'<a href="{_fp_url}" target="_blank" style="{_fp_btn_style}">⛽ Fuel plan</a>',
-                unsafe_allow_html=True
-            )
-        else:
-            _fp_dis_style = _fp_btn_style + "opacity:0.4;cursor:not-allowed;"
-            st.markdown(
-                f'<div style="{_fp_dis_style}">⛽ Fuel plan (unavailable)</div>',
-                unsafe_allow_html=True
-            )
-            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
 
         st.markdown(
-            '<div style="border-top:1px solid #dde;margin:6px 0 4px 0;'
-            'font-size:12px;font-weight:700;color:#2c3e50;padding-top:5px;">⚙ SETTINGS</div>',
+            '<div style="font-size:12px;font-weight:700;color:#2c3e50;padding-bottom:3px;">⚙ SETTINGS</div>',
             unsafe_allow_html=True
         )
 
