@@ -2339,10 +2339,8 @@ if st.session_state.get('_chart_data_version') != _chart_data_version:
     rebuild_chart_data()
     st.session_state['_chart_data_version'] = _chart_data_version
 
+rebuild_chart_data()
 _chart_points = load_chart_data()
-if not _chart_points:
-    rebuild_chart_data()
-    _chart_points = load_chart_data()
 
 _chart_df = pd.DataFrame(_chart_points) if _chart_points else pd.DataFrame()
 _chart_time_ok = False
@@ -3130,29 +3128,31 @@ with _func_col:
             key="sett_blr_rate"
         )
 
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:6px 0 2px 0;">HFO Density [t/m³]</div>', unsafe_allow_html=True)
         _hfo_density_val = float(_app_settings_now.get('hfo_density') or 0.919)
-        _hfo_density = st.number_input(
-            "HFO Density:",
-            value=_hfo_density_val,
-            min_value=0.0,
-            step=0.001,
-            format="%.3f",
-            label_visibility="collapsed",
-            key="sett_hfo_density"
-        )
-
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:6px 0 2px 0;">DO Density [t/m³]</div>', unsafe_allow_html=True)
         _do_density_val = float(_app_settings_now.get('do_density') or 0.870)
-        _do_density = st.number_input(
-            "DO Density:",
-            value=_do_density_val,
-            min_value=0.0,
-            step=0.001,
-            format="%.3f",
-            label_visibility="collapsed",
-            key="sett_do_density"
-        )
+        _dens_lbl_col, _dens_inp_col = st.columns([1, 1])
+        with _dens_lbl_col:
+            st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:22px 0 2px 0;">HFO Density [t/m³]</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:18px 0 2px 0;">DO Density [t/m³]</div>', unsafe_allow_html=True)
+        with _dens_inp_col:
+            _hfo_density = st.number_input(
+                "HFO Density:",
+                value=_hfo_density_val,
+                min_value=0.0,
+                step=0.001,
+                format="%.3f",
+                label_visibility="collapsed",
+                key="sett_hfo_density"
+            )
+            _do_density = st.number_input(
+                "DO Density:",
+                value=_do_density_val,
+                min_value=0.0,
+                step=0.001,
+                format="%.3f",
+                label_visibility="collapsed",
+                key="sett_do_density"
+            )
 
         _save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
 
