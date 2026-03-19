@@ -3370,6 +3370,10 @@ with st.sidebar:
 
         st.markdown('<div style="background:#f4f7fa;border:1px solid #d0dbe6;border-radius:4px;padding:6px 6px 2px 6px;margin:0 0 4px 0;">', unsafe_allow_html=True)
         _ec_max_id = int(events_df['id'].max()) if not events_df.empty else 2
+        # Auto-advance END ID when new events are added so the newest event is always included
+        if _ec_max_id > st.session_state.get('_ec_end_id', 2):
+            st.session_state['_ec_end_id'] = _ec_max_id
+            st.session_state['_ec_end_id_w'] = str(_ec_max_id)
         _ec_c1, _ec_c2 = st.columns(2)
         with _ec_c1:
             _ec_start_raw = st.text_input("EVENT START ID", value=str(st.session_state.get('_ec_start_id', 2)), key="_ec_start_id_w")
@@ -3498,6 +3502,20 @@ with st.sidebar:
                 }
                 _rhs['DGs'] = round(_rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'], 2)
 
+                # ── Single-event mode: when start == end, counter-based diffs are 0.
+                # Override RHS and TTL TIME with stored per-event calculated fields.
+                _single_ev = (_ec_sid == _ec_eid)
+                if _single_ev and not range_df.empty:
+                    _ev0 = range_df.iloc[0]
+                    _rhs['ME']  = round(_ec_hhmm_to_min(_ev0.get('me_diff',  '00:00')) / 60.0, 2)
+                    _rhs['DG1'] = round(_ec_hhmm_to_min(_ev0.get('dg1_diff', '00:00')) / 60.0, 2)
+                    _rhs['DG2'] = round(_ec_hhmm_to_min(_ev0.get('dg2_diff', '00:00')) / 60.0, 2)
+                    _rhs['DG3'] = round(_ec_hhmm_to_min(_ev0.get('dg3_diff', '00:00')) / 60.0, 2)
+                    _rhs['BLR'] = round(_ec_hhmm_to_min(_ev0.get('blr_diff', '00:00')) / 60.0, 2)
+                    _rhs['DGs'] = round(_rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'], 2)
+                    _ttl_min    = _ec_hhmm_to_min(_ev0.get('st_time', '00:00'))
+                    _ttl_time_s = _ec_min_to_hhmm(_ttl_min)
+
                 # ── FUEL CONSUMPTION (ROB diff + bunkering in range) ──
                 _hfo_start = _ec_safe_float(ev_start.get('hfo_rob'))
                 _hfo_end = _ec_safe_float(ev_end.get('hfo_rob'))
@@ -3508,14 +3526,20 @@ with st.sidebar:
                 _hfo_cons = round(_hfo_start - _hfo_end + _hfo_bnkr, 2)
                 _do_cons = round(_do_start - _do_end + _do_bnkr, 2)
 
-                # Per-device fuel split for display (ME / DG1-3 / BLR)
-                _fuel_df = range_df.iloc[1:].copy() if len(range_df) > 1 else range_df.iloc[0:0].copy()
+                # Per-device fuel split for display (ME / DG1-3 / BLR).
+                # For single-event mode include the event itself (no "start baseline" to skip).
+                _fuel_df = range_df.iloc[1:].copy() if not _single_ev else range_df.copy()
                 _me_hfo_raw = sum(_ec_safe_float(r.get('me_hfo_acc_cons')) for _, r in _fuel_df.iterrows())
                 _me_do_raw = sum(_ec_safe_float(r.get('me_do_acc_cons')) for _, r in _fuel_df.iterrows())
                 _dg_hfo_raw_total = sum(_ec_safe_float(r.get('dg_hfo_acc_cons')) for _, r in _fuel_df.iterrows())
                 _dg_do_raw_total = sum(_ec_safe_float(r.get('dg_do_acc_cons')) for _, r in _fuel_df.iterrows())
                 _blr_hfo_raw = sum(_ec_safe_float(r.get('blr_hfo_acc_cons')) for _, r in _fuel_df.iterrows())
                 _blr_do_raw = sum(_ec_safe_float(r.get('blr_do_acc_cons')) for _, r in _fuel_df.iterrows())
+                # For single-event mode, _hfo_cons/_do_cons (ROB diff) are 0 — derive totals
+                # directly from the stored accumulated consumption for that event period.
+                if _single_ev:
+                    _hfo_cons = round(_me_hfo_raw + _dg_hfo_raw_total + _blr_hfo_raw, 2)
+                    _do_cons  = round(_me_do_raw  + _dg_do_raw_total  + _blr_do_raw,  2)
 
                 _dg_rhs_total = _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3']
                 if _dg_rhs_total > 0:
@@ -3615,6 +3639,10 @@ with st.sidebar:
                 # ── AVG PWR / AVG RPM / TTL PWR / TTL RPM (end - start) ──
                 _ttl_pwr = round(max(_ec_safe_float(ev_end.get('me_pwrmtr')) - _ec_safe_float(ev_start.get('me_pwrmtr')), 0), 2)
                 _ttl_rpm = round(max(_ec_safe_float(ev_end.get('me_rev_c')) - _ec_safe_float(ev_start.get('me_rev_c')), 0), 2)
+                # For single-event mode, counter diffs are 0; use stored per-event values instead.
+                if _single_ev and not range_df.empty:
+                    _ttl_pwr = _ec_safe_float(_ev0.get('ttl_pwr'))
+                    _ttl_rpm = _ec_safe_float(_ev0.get('ttl_rpm'))
                 _me_rhs_dec = _rhs['ME']
                 _avg_pwr = round(_ttl_pwr / _me_rhs_dec, 2) if _me_rhs_dec > 0 else 0.0
                 _avg_rpm = round(_ttl_rpm / (_me_rhs_dec * 60.0), 2) if _me_rhs_dec > 0 else 0.0
