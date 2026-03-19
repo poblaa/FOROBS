@@ -3369,11 +3369,12 @@ with st.sidebar:
         st.markdown('<div style="font-size:13px;font-weight:700;color:#2c3e50;padding:4px 0 2px 0;margin:0;">\U0001F5A9 EVENT CALCULATOR</div>', unsafe_allow_html=True)
 
         st.markdown('<div style="background:#f4f7fa;border:1px solid #d0dbe6;border-radius:4px;padding:6px 6px 2px 6px;margin:0 0 4px 0;">', unsafe_allow_html=True)
+        _ec_max_id = int(events_df['id'].max()) if not events_df.empty else 2
         _ec_c1, _ec_c2 = st.columns(2)
         with _ec_c1:
             _ec_start_raw = st.text_input("EVENT START ID", value=str(st.session_state.get('_ec_start_id', 2)), key="_ec_start_id_w")
         with _ec_c2:
-            _ec_end_raw = st.text_input("EVENT END ID", value=str(st.session_state.get('_ec_end_id', max(2, total_rows + 1))), key="_ec_end_id_w")
+            _ec_end_raw = st.text_input("EVENT END ID", value=str(st.session_state.get('_ec_end_id', max(2, _ec_max_id))), key="_ec_end_id_w")
         st.markdown('</div>', unsafe_allow_html=True)
         try:
             _ec_start_id = max(2, int(_ec_start_raw))
@@ -3382,7 +3383,7 @@ with st.sidebar:
         try:
             _ec_end_id = max(2, int(_ec_end_raw))
         except (ValueError, TypeError):
-            _ec_end_id = max(2, total_rows + 1)
+            _ec_end_id = max(2, _ec_max_id)
         st.session_state['_ec_start_id'] = _ec_start_id
         st.session_state['_ec_end_id'] = _ec_end_id
 
