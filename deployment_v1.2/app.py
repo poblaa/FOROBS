@@ -267,6 +267,55 @@ def ensure_seed_event():
     conn.close()
 
 
+def _get_root_id():
+    """Return the current ID of the ROOT event, or None if ROOT does not exist."""
+    conn = sqlite3.connect(DB_PATH)
+    row = conn.execute("SELECT id FROM events WHERE place = 'ROOT'").fetchone()
+    conn.close()
+    return int(row[0]) if row else None
+
+
+def ensure_root_event():
+    """Ensure a ROOT event exists as the always-newest placeholder (highest ID).
+    ROOT cannot be edited or deleted and acts as a positional anchor at MAX id.
+    If ROOT already exists, this is a no-op."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    row = c.execute("SELECT id FROM events WHERE place = 'ROOT'").fetchone()
+    if row is not None:
+        conn.close()
+        return  # ROOT already in place
+    max_id = c.execute("SELECT MAX(id) FROM events").fetchone()[0] or 1
+    root_id = max_id + 1
+    root = {
+        'date': '01-01-99', 'time': '00:00', 'event': 'NOON', 'place': 'ROOT',
+        'me_rev_c': 1, 'main_flmtr': 1, 'dg_in_flmtr': 1, 'dg_out_flmtr': 1,
+        'blr_flmtr': 1, 'cyl_oil_count': 1, 'me_pwrmtr': 1,
+        'me_hrs': 1.00, 'dg1_hrs': 1.00, 'dg2_hrs': 1.00, 'dg3_hrs': 1.00,
+        'boiler_hrs': 1.00, 'dg1_mwh': 1.00, 'dg2_mwh': 1.00, 'dg3_mwh': 1.00,
+        'sox_co2': 1.00,
+        'ocl_pp_a': 1.00, 'ocl_pp_b': 1.00, 'ocl_pp_c': 1.00,
+        'phe_a': 1.00, 'phe_b': 1.00,
+        'sea_temp': 1.0, 'st_lo_tmp': 1.0,
+        'wcu_sep': 1.00, 'comp_1': 1.00, 'comp_2': 1.00, 'w_comp': 1.00,
+        'me_sys_rob': 0.00, 'me_cyl_rob': 0.00, 'dg_sys_rob': 0.00,
+        'hfo_rob': 0.00, 'do_rob': 0.00,
+        'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'DO',
+        'st_time': '00:00', 'me_diff': '00:00', 'dg1_diff': '00:00',
+        'dg2_diff': '00:00', 'dg3_diff': '00:00', 'blr_diff': '00:00',
+        'avg_pwr': 0, 'avg_rpm': 0, 'ttl_pwr': 0, 'ttl_rpm': 0,
+        'hfo_bnkr': 0, 'do_bnkr': 0,
+        'me_sys_bnkr': 0, 'me_cyl_bnkr': 0, 'dg_sys_bnkr': 0,
+    }
+    cols = ', '.join(root.keys())
+    placeholders = ', '.join(['?' for _ in root])
+    c.execute(f"INSERT INTO events (id, {cols}) VALUES ({root_id}, {placeholders})", list(root.values()))
+    # Keep the autoincrement sequence in sync
+    c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (root_id,))
+    conn.commit()
+    conn.close()
+
+
 def get_connection():
     """Get database connection"""
     return sqlite3.connect(DB_PATH, check_same_thread=False)
@@ -367,9 +416,15 @@ def update_event(event_id: int, data: dict):
 
 
 def delete_event(event_id: int):
-    """Delete event from database and renumber IDs to keep continuity"""
+    """Delete event from database and renumber IDs to keep continuity.
+    SEED (id=1) and ROOT (place='ROOT') cannot be deleted."""
     conn = get_connection()
     c = conn.cursor()
+    # Guard: do not delete SEED or ROOT
+    row = c.execute("SELECT place FROM events WHERE id = ?", (event_id,)).fetchone()
+    if row and row[0] in ('SEED', 'ROOT'):
+        conn.close()
+        return
     c.execute("DELETE FROM events WHERE id = ?", (event_id,))
     conn.commit()
     c.execute("SELECT id FROM events ORDER BY id ASC")
@@ -660,13 +715,16 @@ def _compute_chart_point(ev):
     if ttl_pwr > 0 and me_calc_fuel > 0:
         me_sfoc_calc = round(me_calc_fuel / ttl_pwr * 1_000_000, 2)
 
-    # M/E corrected SFOC
+    # M/E corrected SFOC — fall back to calculated when no correction is provided
+    # so that the two chart lines meet at the same point when the user accepts
+    # the calculated value without entering a separate corrected value.
     me_cor_hfo = _g(ev, 'me_hfo_cor_cons')
     me_cor_do  = _g(ev, 'me_do_cor_cons')
     me_cor_fuel = me_cor_hfo + me_cor_do
-    me_sfoc_cor = 0.0
-    if ttl_pwr > 0 and me_cor_fuel > 0:
-        me_sfoc_cor = round(me_cor_fuel / ttl_pwr * 1_000_000, 2)
+    if me_cor_fuel > 0:
+        me_sfoc_cor = round(me_cor_fuel / ttl_pwr * 1_000_000, 2) if ttl_pwr > 0 else 0.0
+    else:
+        me_sfoc_cor = me_sfoc_calc  # lines meet when no correction given
 
     # D/G total running time (minutes)
     dg1_min = _hhmm_to_minutes(ev.get('dg1_diff'))
@@ -682,13 +740,14 @@ def _compute_chart_point(ev):
     if dg_total_min > 0 and dg_calc_fuel > 0:
         dg_cons_calc = round((dg_calc_fuel / dg_total_min) * 60.0, 3)
 
-    # D/G corrected consumption [mT/h]
+    # D/G corrected consumption [mT/h] — fall back to calculated when no correction is provided
     dg_cor_hfo = _g(ev, 'dg_hfo_cor_cons')
     dg_cor_do  = _g(ev, 'dg_do_cor_cons')
     dg_cor_fuel = dg_cor_hfo + dg_cor_do
-    dg_cons_cor = 0.0
-    if dg_total_min > 0 and dg_cor_fuel > 0:
-        dg_cons_cor = round((dg_cor_fuel / dg_total_min) * 60.0, 3)
+    if dg_cor_fuel > 0:
+        dg_cons_cor = round((dg_cor_fuel / dg_total_min) * 60.0, 3) if dg_total_min > 0 else 0.0
+    else:
+        dg_cons_cor = dg_cons_calc  # lines meet when no correction given
 
     return {
         'id': eid,
@@ -707,7 +766,9 @@ def rebuild_chart_data():
     try:
         conn = get_connection()
         conn.row_factory = sqlite3.Row
-        rows = conn.execute("SELECT * FROM events WHERE id > 1 ORDER BY id ASC").fetchall()
+        rows = conn.execute(
+            "SELECT * FROM events WHERE id > 1 AND place != 'ROOT' ORDER BY id ASC"
+        ).fetchall()
     except Exception:
         return
     finally:
@@ -727,7 +788,7 @@ def rebuild_chart_data():
 
 
 def update_chart_point(event_id):
-    """Update or insert one chart point for given event_id."""
+    """Update or insert one chart point for given event_id. Skips ROOT and SEED."""
     conn = None
     try:
         conn = get_connection()
@@ -741,8 +802,12 @@ def update_chart_point(event_id):
 
     if row is None:
         return
+    ev = dict(row)
+    # Skip ROOT and SEED — they are not plotted
+    if ev.get('place') in ('ROOT', 'SEED'):
+        return
 
-    pt = _compute_chart_point(dict(row))
+    pt = _compute_chart_point(ev)
 
     # Load existing data
     points = []
@@ -828,7 +893,7 @@ def recalculate_chain(from_id):
         return
 
     chain_rows = conn.execute(
-        "SELECT * FROM events WHERE id >= ? ORDER BY id ASC",
+        "SELECT * FROM events WHERE id >= ? AND place != 'ROOT' ORDER BY id ASC",
         (int(from_id),)
     ).fetchall()
     if not chain_rows:
@@ -1028,6 +1093,7 @@ _card_layout = load_card_layout()
 # Initialize database
 init_db()
 ensure_seed_event()
+ensure_root_event()
 
 # Page config - sidebar for logbook
 st.set_page_config(
@@ -2458,7 +2524,8 @@ def _fmt_c2(val):
 # ---- EVENT CARD OUTPUT (read-only calculated values) ----
 _ev = editing_event or {}
 _eid = st.session_state.editing_id
-_can_edit = bool(_eid and _eid > 1)
+_is_root = bool(_ev.get('place') == 'ROOT')
+_can_edit = bool(_eid and _eid > 1 and not _is_root)
 
 # Helper: format output value for display
 def _ov(key, decimals=2):
@@ -2499,7 +2566,8 @@ else:
     for k in _c2_input_keys:
         c2_def[k] = ''
 
-_eco_title = f"EVENT OUTPUT  ID_{_eid}" if _eid else "EVENT OUTPUT"
+_eco_title = (f"EVENT OUTPUT  ID_{_eid}  [ROOT — read only]" if _is_root
+              else (f"EVENT OUTPUT  ID_{_eid}" if _eid else "EVENT OUTPUT"))
 _eci_title = f"EVENT INPUT  ID_{_eid}" if _eid else "EVENT INPUT"
 
 # Compute TTL fuel ROB for display
@@ -3009,10 +3077,31 @@ with _inp_col:
                     pass
                 st.success(f"Event #{st.session_state.editing_id} updated!")
             else:
-                insert_event(event_data)
-                conn_tmp = get_connection()
-                new_id = conn_tmp.execute("SELECT MAX(id) FROM events").fetchone()[0]
-                conn_tmp.close()
+                # ── ROOT-aware insertion: new event takes ROOT's current ID;
+                # ROOT shifts up by one so it stays the highest ID always. ──
+                root_id = _get_root_id()
+                if root_id is not None:
+                    _ins_conn = get_connection()
+                    # Move ROOT to root_id + 1
+                    _ins_conn.execute(
+                        "UPDATE events SET id = ? WHERE place = 'ROOT'",
+                        (root_id + 1,)
+                    )
+                    _ins_conn.execute(
+                        "UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'",
+                        (root_id + 1,)
+                    )
+                    _ins_conn.commit()
+                    _ins_conn.close()
+                    # Insert the new event at ROOT's former position
+                    event_data['id'] = root_id
+                    insert_event(event_data)
+                    new_id = root_id
+                else:
+                    insert_event(event_data)
+                    _conn_tmp = get_connection()
+                    new_id = _conn_tmp.execute("SELECT MAX(id) FROM events").fetchone()[0]
+                    _conn_tmp.close()
                 if new_id and new_id > 1:
                     calculate_event(new_id)
                 try:
@@ -3026,7 +3115,11 @@ with _inp_col:
 
     if delete_clicked:
         if st.session_state.editing_id:
-            st.session_state.confirm_delete = True
+            _del_place = (_ev.get('place') or '') if _ev else ''
+            if _del_place in ('ROOT', 'SEED'):
+                st.toast(f"The {_del_place} event cannot be deleted.", icon="🔒")
+            else:
+                st.session_state.confirm_delete = True
         else:
             st.toast("No event selected to delete. Click an event ID in the logbook first.", icon="⚠️")
 
@@ -3139,7 +3232,9 @@ if st.session_state.pop('_settings_saved_toast', False):
 with st.sidebar:
     events_df = fetch_all_events_stable()
     _total_log_count = len(events_df) if not events_df.empty else 0
-    st.markdown(f'<div style="font-size:14px;font-weight:700;color:#2c3e50;padding:0 0 2px 0;margin:-1rem 0 0 0;">\U0001F4D6 Event Logbook ({_total_log_count} ID\'s)</div>', unsafe_allow_html=True)
+    # Subtract SEED and ROOT from the user-visible count (they are anchors, not real events)
+    _real_event_count = max(0, _total_log_count - 2) if _total_log_count >= 2 else max(0, _total_log_count - 1)
+    st.markdown(f'<div style="font-size:14px;font-weight:700;color:#2c3e50;padding:0 0 2px 0;margin:-1rem 0 0 0;">\U0001F4D6 Event Logbook ({_real_event_count} events | SEED + ROOT)</div>', unsafe_allow_html=True)
     
     if not events_df.empty:
         col_rename = {c: c.upper() for c in events_df.columns}
@@ -3334,6 +3429,20 @@ with st.sidebar:
             {col: '{:.2f}' for col in window_df.select_dtypes(include='number').columns if col != 'ID'},
             na_rep=''
         )
+
+        # Highlight ROOT and SEED rows with distinctive background
+        def _highlight_special_rows(row):
+            place_val = str(row.get('PLACE', '')).upper() if 'PLACE' in row.index else ''
+            if place_val == 'ROOT':
+                return ['background-color: #d0e8ff; font-weight: bold;'] * len(row)
+            if place_val == 'SEED':
+                return ['background-color: #e8f0e8; font-weight: bold;'] * len(row)
+            return [''] * len(row)
+
+        try:
+            styled_df = styled_df.apply(_highlight_special_rows, axis=1)
+        except Exception:
+            pass
 
         _col_cfg = {}
         for _col in window_df.columns:
