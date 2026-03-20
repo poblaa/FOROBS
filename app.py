@@ -3524,50 +3524,17 @@ with st.sidebar:
                     _dg1_hfo_raw = _dg2_hfo_raw = _dg3_hfo_raw = 0.0
                     _dg1_do_raw = _dg2_do_raw = _dg3_do_raw = 0.0
 
-                _hfo_raw_total = _me_hfo_raw + _dg1_hfo_raw + _dg2_hfo_raw + _dg3_hfo_raw + _blr_hfo_raw
-                _do_raw_total = _me_do_raw + _dg1_do_raw + _dg2_do_raw + _dg3_do_raw + _blr_do_raw
-
-                if _hfo_raw_total > 0 and _hfo_cons > 0:
-                    _hfo_scale = _hfo_cons / _hfo_raw_total
-                    _me_hfo = round(_me_hfo_raw * _hfo_scale, 2)
-                    _dg1_hfo = round(_dg1_hfo_raw * _hfo_scale, 2)
-                    _dg2_hfo = round(_dg2_hfo_raw * _hfo_scale, 2)
-                    _dg3_hfo = round(_dg3_hfo_raw * _hfo_scale, 2)
-                    _blr_hfo = round(_blr_hfo_raw * _hfo_scale, 2)
-                elif _hfo_cons > 0:
-                    _sum_rhs_all = _rhs['ME'] + _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'] + _rhs['BLR']
-                    if _sum_rhs_all > 0:
-                        _me_hfo = round(_hfo_cons * _rhs['ME'] / _sum_rhs_all, 2)
-                        _dg1_hfo = round(_hfo_cons * _rhs['DG1'] / _sum_rhs_all, 2)
-                        _dg2_hfo = round(_hfo_cons * _rhs['DG2'] / _sum_rhs_all, 2)
-                        _dg3_hfo = round(_hfo_cons * _rhs['DG3'] / _sum_rhs_all, 2)
-                        _blr_hfo = round(_hfo_cons * _rhs['BLR'] / _sum_rhs_all, 2)
-                    else:
-                        _me_hfo = _dg1_hfo = _dg2_hfo = _dg3_hfo = _blr_hfo = 0.0
-                else:
-                    _me_hfo = _dg1_hfo = _dg2_hfo = _dg3_hfo = _blr_hfo = 0.0
-
-                if _do_raw_total > 0 and _do_cons > 0:
-                    _do_scale = _do_cons / _do_raw_total
-                    _me_do = round(_me_do_raw * _do_scale, 2)
-                    _dg1_do = round(_dg1_do_raw * _do_scale, 2)
-                    _dg2_do = round(_dg2_do_raw * _do_scale, 2)
-                    _dg3_do = round(_dg3_do_raw * _do_scale, 2)
-                    _blr_do = round(_blr_do_raw * _do_scale, 2)
-                elif _do_cons > 0:
-                    # Fallback: distribute DO only to DGs (primary DO consumers),
-                    # proportional to DG running hours — ME does not consume DO
-                    _dg_rhs_for_do = _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3']
-                    if _dg_rhs_for_do > 0:
-                        _me_do = 0.0
-                        _blr_do = 0.0
-                        _dg1_do = round(_do_cons * _rhs['DG1'] / _dg_rhs_for_do, 2)
-                        _dg2_do = round(_do_cons * _rhs['DG2'] / _dg_rhs_for_do, 2)
-                        _dg3_do = round(_do_cons * _rhs['DG3'] / _dg_rhs_for_do, 2)
-                    else:
-                        _me_do = _dg1_do = _dg2_do = _dg3_do = _blr_do = 0.0
-                else:
-                    _me_do = _dg1_do = _dg2_do = _dg3_do = _blr_do = 0.0
+                # Use per-device acc_cons sums directly — devices are independent
+                _me_hfo = round(_me_hfo_raw, 2)
+                _me_do = round(_me_do_raw, 2)
+                _dg1_hfo = round(_dg1_hfo_raw, 2)
+                _dg2_hfo = round(_dg2_hfo_raw, 2)
+                _dg3_hfo = round(_dg3_hfo_raw, 2)
+                _dg1_do = round(_dg1_do_raw, 2)
+                _dg2_do = round(_dg2_do_raw, 2)
+                _dg3_do = round(_dg3_do_raw, 2)
+                _blr_hfo = round(_blr_hfo_raw, 2)
+                _blr_do = round(_blr_do_raw, 2)
 
                 _dg_hfo_disp = round(_dg1_hfo + _dg2_hfo + _dg3_hfo, 2)
                 _dg_do_disp = round(_dg1_do + _dg2_do + _dg3_do, 2)
