@@ -2739,8 +2739,6 @@ with _eci_col:
             'me_sys_cor_cons':  safe_float(_corr_vals.get('me_sys_cor_cons', 0)),
             'me_cyl_cor_cons':  safe_float(_corr_vals.get('me_cyl_cor_cons', 0)),
             'dg_sys_cor_cons':  safe_float(_corr_vals.get('dg_sys_cor_cons', 0)),
-            'me_hfo_cor_cons':  0,
-            'me_do_cor_cons':   0,
             'me_cor_cons':      safe_float(_corr_vals.get('me_cor_cons', 0)),
             'dg_cor_cons':      safe_float(_corr_vals.get('dg_cor_cons', 0)),
             'blr_cor_cons':     safe_float(_corr_vals.get('blr_cor_cons', 0)),
