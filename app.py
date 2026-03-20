@@ -23,6 +23,10 @@ ELCALC_PORT = 8502
 # M/E Cylinder oil specific consumption constant [g/kWh]
 ME_CYL_OIL_G_PER_KWH = 0.0007
 
+# Bump this integer any time the _compute_calculated_values algorithm changes so
+# that ensure_calculated_fields_ready_once() forces a full DB recalculation.
+CALC_VERSION = 4
+
 def _is_local_port_open(port, host='127.0.0.1', timeout=0.2):
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(timeout)
@@ -72,10 +76,6 @@ CARD_S = _load_card_settings()
 _inp_s = CARD_S.get('input_card', {})
 _eco_s = CARD_S.get('event_card_output', {})
 _eci_s = CARD_S.get('event_card_input', {})
-
-# Bump this integer any time the _compute_calculated_values algorithm changes so
-# that ensure_calculated_fields_ready_once() forces a full DB recalculation.
-CALC_VERSION = 4
 
 # App settings (user-configurable via Settings panel)
 _APP_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_settings.json')
@@ -168,7 +168,7 @@ def init_db():
         ('dg_sys_rob', 'REAL'),
         # Oil CALC consumption
         ('me_sys_calc_cons', 'REAL'),   # user input from oil card
-        ('me_cyl_calc_cons', 'REAL'),   # auto: avg_pwr * 0.0007 * st_time_h
+        ('me_cyl_calc_cons', 'REAL'),   # auto: cyl_oil_count diff
         ('dg_sys_calc_cons', 'REAL'),   # user input from oil card
         # Oil COR consumption (user correction from oil card)
         ('me_sys_cor_cons', 'REAL'),
@@ -228,13 +228,9 @@ def ensure_seed_event():
     If ID 1 exists but is not the seed, shift all events up by 1 to make room."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT id, place, blr_fo_set FROM events WHERE id = 1")
+    c.execute("SELECT id, place FROM events WHERE id = 1")
     row = c.fetchone()
     if row is not None and row[1] == 'SEED':
-        # One-time migration: update blr_fo_set to DO if it is not already DO
-        if row[2] != 'DO':
-            c.execute("UPDATE events SET blr_fo_set = 'DO' WHERE id = 1")
-            conn.commit()
         conn.close()
         return  # Seed already in place
     if row is not None:
@@ -257,7 +253,7 @@ def ensure_seed_event():
         # Seed ROBs and settings
         'me_sys_rob': 1.00, 'me_cyl_rob': 1.00, 'dg_sys_rob': 1.00,
         'hfo_rob': 1.00, 'do_rob': 1.00,
-        'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'DO',
+        'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'HFO',
         # Seed diffs / calc values
         'st_time': '00:00', 'me_diff': '00:00', 'dg1_diff': '00:00',
         'dg2_diff': '00:00', 'dg3_diff': '00:00', 'blr_diff': '00:00',
@@ -383,11 +379,9 @@ def delete_event(event_id: int):
     for new_id, (old_id,) in enumerate(rows, start=1):
         if old_id != new_id:
             c.execute("UPDATE events SET id = ? WHERE id = ?", (new_id, old_id))
-    conn.commit()
-    # Reset AUTOINCREMENT sequence to current max so the next INSERT gets the
-    # correct sequential ID (UPDATE statements above do not touch sqlite_sequence).
-    max_id = c.execute("SELECT MAX(id) FROM events").fetchone()[0] or 0
-    c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (max_id,))
+    # Reset the AUTOINCREMENT counter so the next INSERT continues from new_max+1
+    new_max = len(rows)
+    c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = 'events'", (new_max,))
     conn.commit()
     conn.close()
     invalidate_events_cache()
@@ -561,16 +555,15 @@ def _compute_calculated_values(present, previous):
             calc['dg_hfo_acc_cons']  = round(hfo_cor_total * dg_hfo_cal  / hfo_cal_sum, 2)
             calc['blr_hfo_acc_cons'] = round(hfo_cor_total * blr_hfo_cal / hfo_cal_sum, 2)
         else:
-            # No flowmeter data — assign to first device set to HFO
-            calc['me_hfo_acc_cons']  = 0.0
+            # No calculated HFO consumption — assign to first HFO device found
+            calc['me_hfo_acc_cons']  = hfo_cor_total if calc['me_fo_set'] == 'HFO' else 0.0
             calc['dg_hfo_acc_cons']  = 0.0
             calc['blr_hfo_acc_cons'] = 0.0
-            if calc['me_fo_set'] == 'HFO':
-                calc['me_hfo_acc_cons'] = hfo_cor_total
-            elif calc['dg_fo_set'] == 'HFO':
-                calc['dg_hfo_acc_cons'] = hfo_cor_total
-            elif calc['blr_fo_set'] == 'HFO':
-                calc['blr_hfo_acc_cons'] = hfo_cor_total
+            if calc['me_fo_set'] != 'HFO':
+                if calc['dg_fo_set'] == 'HFO':
+                    calc['dg_hfo_acc_cons'] = hfo_cor_total
+                elif calc['blr_fo_set'] == 'HFO':
+                    calc['blr_hfo_acc_cons'] = hfo_cor_total
     else:
         calc['me_hfo_acc_cons']  = me_hfo_cal
         calc['dg_hfo_acc_cons']  = dg_hfo_cal
@@ -584,7 +577,7 @@ def _compute_calculated_values(present, previous):
             calc['dg_do_acc_cons']  = round(do_cor_total * dg_do_cal  / do_cal_sum, 2)
             calc['blr_do_acc_cons'] = round(do_cor_total * blr_do_cal / do_cal_sum, 2)
         else:
-            # No flowmeter data — assign to first device set to DO
+            # No calculated DO consumption — assign to first DO device found
             calc['me_do_acc_cons']  = 0.0
             calc['dg_do_acc_cons']  = 0.0
             calc['blr_do_acc_cons'] = 0.0
@@ -601,9 +594,9 @@ def _compute_calculated_values(present, previous):
 
     # Store per-device corrected values for DB persistence
     calc['dg_hfo_cor_cons']  = calc['dg_hfo_acc_cons']  if hfo_cor_total > 0 else 0.0
-    calc['dg_do_cor_cons']   = calc['dg_do_acc_cons']   if do_cor_total  > 0 else 0.0
+    calc['dg_do_cor_cons']   = calc['dg_do_acc_cons']   if do_cor_total > 0 else 0.0
     calc['blr_hfo_cor_cons'] = calc['blr_hfo_acc_cons'] if hfo_cor_total > 0 else 0.0
-    calc['blr_do_cor_cons']  = calc['blr_do_acc_cons']  if do_cor_total  > 0 else 0.0
+    calc['blr_do_cor_cons']  = calc['blr_do_acc_cons']  if do_cor_total > 0 else 0.0
 
     calc['hfo_rob'] = round(
         _g(previous, 'hfo_rob')
@@ -661,25 +654,22 @@ def _compute_chart_point(ev):
     time_s = str(ev.get('time', ''))
 
     # M/E calculated SFOC: fuel [mT] / ttl_pwr [kWh] * 1_000_000 = g/kWh
-    me_calc_hfo = _g(ev, 'me_hfo_calc_cons')
-    me_calc_do  = _g(ev, 'me_do_calc_cons')
-    me_calc_fuel = me_calc_hfo + me_calc_do  # total ME fuel in mT (from flowmeter)
+    me_calc_hfo = _g(ev, 'me_hfo_acc_cons')
+    me_calc_do  = _g(ev, 'me_do_acc_cons')
+    me_calc_fuel = me_calc_hfo + me_calc_do  # total ME fuel in mT
     ttl_pwr = _g(ev, 'ttl_pwr')
 
     me_sfoc_calc = 0.0
     if ttl_pwr > 0 and me_calc_fuel > 0:
         me_sfoc_calc = round(me_calc_fuel / ttl_pwr * 1_000_000, 2)
 
-    # M/E corrected SFOC (only shown when user has entered a corrected value)
-    me_hfo_cor_input = _g(ev, 'me_hfo_cor_cons')
-    me_do_cor_input  = _g(ev, 'me_do_cor_cons')
+    # M/E corrected SFOC
+    me_cor_hfo = _g(ev, 'me_hfo_cor_cons')
+    me_cor_do  = _g(ev, 'me_do_cor_cons')
+    me_cor_fuel = me_cor_hfo + me_cor_do
     me_sfoc_cor = 0.0
-    if (me_hfo_cor_input > 0 or me_do_cor_input > 0) and ttl_pwr > 0:
-        me_acc_hfo = _g(ev, 'me_hfo_acc_cons')
-        me_acc_do  = _g(ev, 'me_do_acc_cons')
-        me_acc_fuel = me_acc_hfo + me_acc_do
-        if me_acc_fuel > 0:
-            me_sfoc_cor = round(me_acc_fuel / ttl_pwr * 1_000_000, 2)
+    if ttl_pwr > 0 and me_cor_fuel > 0:
+        me_sfoc_cor = round(me_cor_fuel / ttl_pwr * 1_000_000, 2)
 
     # D/G total running time (minutes)
     dg1_min = _hhmm_to_minutes(ev.get('dg1_diff'))
@@ -805,12 +795,8 @@ def calculate_event(event_id):
         return
     present = dict(row)
 
-    # Find the actual previous event by ordering; do NOT assume id = event_id - 1
-    # because delete + renumber can leave a gap in the AUTOINCREMENT sequence.
-    prev_row = conn.execute(
-        "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
-        (event_id,)
-    ).fetchone()
+    prev_id = max(event_id - 1, 1)
+    prev_row = conn.execute("SELECT * FROM events WHERE id = ?", (prev_id,)).fetchone()
     if prev_row is None:
         conn.close()
         return
@@ -827,32 +813,23 @@ def calculate_event(event_id):
 
 def recalculate_chain(from_id):
     """Recalculate all events from from_id onward in a single batch transaction."""
+    start_id = max(int(from_id) - 1, 1)
     conn = get_connection()
     conn.row_factory = sqlite3.Row
-
-    # Find the actual previous event by ordering; do NOT assume id = from_id - 1
-    # because delete + renumber can leave a gap in the AUTOINCREMENT sequence.
-    prev_row = conn.execute(
-        "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
-        (int(from_id),)
-    ).fetchone()
-    if prev_row is None:
-        conn.close()
-        return
-
-    chain_rows = conn.execute(
+    rows = conn.execute(
         "SELECT * FROM events WHERE id >= ? ORDER BY id ASC",
-        (int(from_id),)
+        (start_id,)
     ).fetchall()
-    if not chain_rows:
+
+    if len(rows) <= 1:
         conn.close()
         return
 
     updates = []
-    previous = dict(prev_row)
+    previous = dict(rows[0])
     calc_keys = None
 
-    for row in chain_rows:
+    for row in rows[1:]:
         present = dict(row)
         calc = _compute_calculated_values(present, previous)
         if calc_keys is None:
@@ -871,8 +848,7 @@ def recalculate_chain(from_id):
 
 
 def ensure_calculated_fields_ready_once():
-    """Run one-time chain recalculation when transferred rows miss derived values,
-    or when the calculation algorithm version has been bumped (CALC_VERSION)."""
+    """Run one-time chain recalculation when transferred rows miss derived values."""
     if st.session_state.get('_calc_ready_checked', False):
         return
     st.session_state['_calc_ready_checked'] = True
@@ -902,19 +878,8 @@ def ensure_calculated_fields_ready_once():
         ).fetchone()[0] or 0)
         conn.close()
 
-        # Check whether the stored calc version matches the current algorithm.
-        # If it does not (or is absent), force a full recalculation so that DB
-        # values computed with an older formula are replaced with correct ones.
-        _settings = _load_app_settings()
-        stored_version = int(_settings.get('calc_version', 0))
-        needs_version_recalc = stored_version < CALC_VERSION
-
-        if missing_count > 0 or needs_version_recalc:
+        if missing_count > 0:
             recalculate_chain(2)
-            # Persist updated version so this recalculation runs only once
-            if needs_version_recalc:
-                _settings['calc_version'] = CALC_VERSION
-                _save_app_settings(_settings)
     except Exception:
         pass
 
@@ -996,29 +961,6 @@ def fmt_field(key, val):
 
 VALID_MINUTES = {'00','06','12','18','24','30','36','42','48','54'}
 
-# DEP lock: fields that must be copied from previous event when DEPARTURE is selected
-_DEP_ME_FIELDS = ['me_rev_c', 'main_flmtr', 'cyl_oil_count', 'me_pwrmtr', 'me_hrs']
-
-def _get_prev_event_for_dep(editing_id=None):
-    """Return dict of previous event values for DEP M/E counter lock.
-    If editing_id is given, get the event just before it; otherwise get the latest."""
-    try:
-        conn = get_connection()
-        conn.row_factory = sqlite3.Row
-        if editing_id and int(editing_id) > 1:
-            row = conn.execute(
-                "SELECT * FROM events WHERE id < ? ORDER BY id DESC LIMIT 1",
-                (int(editing_id),)
-            ).fetchone()
-        else:
-            row = conn.execute(
-                "SELECT * FROM events ORDER BY id DESC LIMIT 1"
-            ).fetchone()
-        conn.close()
-        return dict(row) if row else {}
-    except Exception:
-        return {}
-
 # ---- Card layout persistence ----
 LAYOUT_FILE = "card_layout.json"
 DEFAULT_LAYOUT = {
@@ -1026,7 +968,6 @@ DEFAULT_LAYOUT = {
     "event_card_input": {"top": 17, "right": 950, "locked": False},
     "input_card": {"top": 20, "right": 19, "locked": False},
     "functions_panel": {"top": 650, "right": 19, "locked": False},
-    "settings_panel": {"top": 640, "right": 230, "locked": False},
     "me_sfoc_chart": {"top": 440, "right": 500, "locked": False},
     "dg_chart": {"top": 440, "right": 950, "locked": False}
 }
@@ -1141,9 +1082,9 @@ st.markdown("""
     /* Sidebar button - thinner */
     [data-testid="stSidebar"] .stButton > button {
         padding: 2px 8px !important;
-        min-height: 30px !important;
-        height: 30px !important;
-        font-size: 13px !important;
+        min-height: 28px !important;
+        height: 28px !important;
+        font-size: 12px !important;
         margin-top: 2px !important;
     }
     
@@ -1497,16 +1438,6 @@ st.markdown("""
         overflow: hidden !important;
     }
     .chart-card-marker { display: none; height: 0; }
-
-    /* ===== FUEL TYPE COLOUR BANDS ===== */
-    /* Used in Event Output, Event Input, Event Calculator tables */
-    .ev-hfo, .el-hfo { background: #e8d5b8 !important; }
-    .ev-do,  .el-do  { background: #fde8c8 !important; }
-    .ev-oil, .el-oil { background: #ffffcc !important; }
-    /* Matching colour for ec-lbl divs inside Event Input card */
-    .ec-lbl-hfo { background: #e8d5b8 !important; border-color: #c8a882 !important; }
-    .ec-lbl-do  { background: #fde8c8 !important; border-color: #f5c890 !important; }
-    .ec-lbl-oil { background: #ffffcc !important; border-color: #e0e080 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -1798,15 +1729,13 @@ _main_js = """
 """
 components.html(_main_js, height=0)
 
-# Card drag-and-drop positioning system (7 cards) with zoom-resize
+# Card drag-and-drop positioning system (6 cards) with zoom-resize
 _eco_l = _card_layout['event_card_output']
 _eci_l = _card_layout['event_card_input']
 _inp_l = _card_layout['input_card']
 _func_l = _card_layout['functions_panel']
-_sett_l = _card_layout.get('settings_panel', {'top': 770, 'right': 19, 'locked': False})
 _me_chart_l = _card_layout['me_sfoc_chart']
 _dg_chart_l = _card_layout['dg_chart']
-_sett_s = CARD_S.get('settings_panel', {})
 _card_pos_js = """<script>
 (function(){
     var doc = window.parent.document, win = window.parent;
@@ -1830,10 +1759,6 @@ _card_pos_js = """<script>
             baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
             border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
         },
-        settings_panel: {
-            baseW: __SETT_BASE_W__, minZ: __SETT_MIN_Z__, maxZ: __SETT_MAX_Z__, defZ: __SETT_DEF_Z__,
-            border: '__SETT_BORDER__', borderRadius: '__SETT_BORDER_RADIUS__', padding: '__SETT_PADDING__'
-        },
         me_sfoc_chart: {
             baseW: __INP_BASE_W__, minZ: __INP_MIN_Z__, maxZ: __INP_MAX_Z__, defZ: __INP_DEF_Z__,
             border: '__INP_BORDER__', borderRadius: '__INP_BORDER_RADIUS__', padding: '__INP_PADDING__'
@@ -1849,7 +1774,6 @@ _card_pos_js = """<script>
         event_card_input:  {top: __ECI_TOP__, right: __ECI_RIGHT__, locked: __ECI_LOCKED__, zoom: CFG.event_card_input.defZ},
         input_card:        {top: __INP_TOP__, right: __INP_RIGHT__, locked: __INP_LOCKED__, zoom: CFG.input_card.defZ},
         functions_panel:   {top: __FUNC_TOP__, right: __FUNC_RIGHT__, locked: __FUNC_LOCKED__, zoom: CFG.functions_panel.defZ},
-        settings_panel:    {top: __SETT_TOP__, right: __SETT_RIGHT__, locked: __SETT_LOCKED__, zoom: CFG.settings_panel.defZ},
         me_sfoc_chart:     {top: __ME_CH_TOP__, right: __ME_CH_RIGHT__, locked: __ME_CH_LOCKED__, zoom: CFG.me_sfoc_chart.defZ},
         dg_chart:          {top: __DG_CH_TOP__, right: __DG_CH_RIGHT__, locked: __DG_CH_LOCKED__, zoom: CFG.dg_chart.defZ}
     };
@@ -1957,8 +1881,7 @@ _card_pos_js = """<script>
 
         // Basic positioning — must use setProperty with important to override CSS
         form.style.setProperty('position', 'fixed', 'important');
-        // Settings panel floats on top of all other cards
-        form.style.zIndex = (key === 'settings_panel') ? '200' : '100';
+        form.style.zIndex = '100';
         form.style.top = p.top + 'px';
         form.style.right = 'auto';
 
@@ -2080,31 +2003,6 @@ _card_pos_js = """<script>
         }
         bar.addEventListener('mousedown', startDrag);
         bar.addEventListener('touchstart', startDrag, {passive: false});
-
-        // For functions_panel: wrap the scrollable body content so drag bar stays pinned
-        if (key === 'functions_panel' && !form.querySelector('.fp-scroll-body')) {
-            var scrollBody = doc.createElement('div');
-            scrollBody.className = 'fp-scroll-body';
-            scrollBody.style.cssText = 'overflow-y:auto;overflow-x:hidden;max-height:70vh;margin:0 -4px;padding:0 4px;';
-            // Collect all direct children that are not the drag bar or resize handle
-            var toMove = [];
-            for (var ci = 0; ci < form.childNodes.length; ci++) {
-                var ch = form.childNodes[ci];
-                if (ch === bar) continue;
-                if (ch.classList && ch.classList.contains('card-resize-handle')) continue;
-                toMove.push(ch);
-            }
-            for (var mi = 0; mi < toMove.length; mi++) {
-                scrollBody.appendChild(toMove[mi]);
-            }
-            // Insert scroll body after drag bar, before resize handle
-            var resizeHandle = form.querySelector('.card-resize-handle');
-            if (resizeHandle) {
-                form.insertBefore(scrollBody, resizeHandle);
-            } else {
-                form.appendChild(scrollBody);
-            }
-        }
     }
 
     function init() {
@@ -2121,96 +2019,13 @@ _card_pos_js = """<script>
             else if (t.indexOf('EVENT INPUT') >= 0) { setupCard(forms[i], 'event_card_input', pos); ok++; }
             else if (t.indexOf('INPUT CARD') >= 0) { setupCard(forms[i], 'input_card', pos); ok++; }
             else if (t.indexOf('FUNCTIONS PANEL') >= 0) { setupCard(forms[i], 'functions_panel', pos); ok++; }
-            else if (t.indexOf('SETTINGS') >= 0) { setupCard(forms[i], 'settings_panel', pos); ok++; }
             else if (t.indexOf('ME SFOC CHART') >= 0 || t.indexOf('SFOC [g/kWh]') >= 0 || t.indexOf('ME SFOC [g/kWh]') >= 0) { setupCard(forms[i], 'me_sfoc_chart', pos); ok++; }
             else if (t.indexOf('DG CONSUMPTION CHART') >= 0 || t.indexOf('DG [mT/h]') >= 0) { setupCard(forms[i], 'dg_chart', pos); ok++; }
         }
-        // Apply DEP lock if active
-        applyDepLock(main);
         return ok >= 5;
     }
 
-    // ── DEP M/E counter lock ──────────────────────────────────────────────
-    // When EVENT selectbox = DEPARTURE and dep-lock-data[data-dep-active]="1",
-    // fill M/E counter inputs with previous event values and make them read-only.
-    var _depLockApplied = false;
-
-    function applyDepLock(main) {
-        var lockDiv = main ? main.querySelector('.dep-lock-data') : null;
-        if (!lockDiv) return;
-        if (lockDiv.getAttribute('data-dep-active') !== '1') {
-            // Remove any previously applied lock
-            _unlockDepFields(main);
-            return;
-        }
-        // Find the EVENT selectbox in the INPUT CARD form
-        var inputForm = null;
-        var forms = main.querySelectorAll('[data-testid="stForm"]');
-        for (var i = 0; i < forms.length; i++) {
-            var h = forms[i].querySelector('.card-header-right');
-            if (h && h.textContent.indexOf('INPUT CARD') >= 0) { inputForm = forms[i]; break; }
-        }
-        if (!inputForm) return;
-
-        // Watch the EVENT selectbox for DEPARTURE
-        var eventSel = null;
-        var allSel = inputForm.querySelectorAll('[data-baseweb="select"] [data-testid="stSelectbox"]');
-        // Try finding via aria-label containing 'EVENT'
-        var allInputs = inputForm.querySelectorAll('input');
-        // Streamlit renders selectbox as a div with current value text
-        // We check the selected value text in the select box wrapper
-        var selectWrappers = inputForm.querySelectorAll('[data-baseweb="select"]');
-        var isDep = false;
-        for (var j = 0; j < selectWrappers.length; j++) {
-            var txt = selectWrappers[j].textContent || '';
-            if (txt.indexOf('DEPARTURE') >= 0) { isDep = true; break; }
-        }
-        if (!isDep) {
-            _unlockDepFields(main);
-            return;
-        }
-        // Lock M/E counter fields
-        var prevVals = {
-            'ME REV C': lockDiv.getAttribute('data-me-rev-c') || '',
-            'MAIN FLMTR': lockDiv.getAttribute('data-main-flmtr') || '',
-            'CYL OIL COUNT': lockDiv.getAttribute('data-cyl-oil-count') || '',
-            'ME PWRMTR': lockDiv.getAttribute('data-me-pwrmtr') || '',
-            'M/E HRS': lockDiv.getAttribute('data-me-hrs') || ''
-        };
-        var inps = inputForm.querySelectorAll('input[aria-label]');
-        for (var k = 0; k < inps.length; k++) {
-            var lbl = (inps[k].getAttribute('aria-label') || '').trim().toUpperCase();
-            if (prevVals.hasOwnProperty(lbl)) {
-                inps[k].setAttribute('readonly', 'readonly');
-                inps[k].style.setProperty('background-color', '#f0f0f0', 'important');
-                inps[k].style.setProperty('color', '#888', 'important');
-                inps[k].style.setProperty('cursor', 'not-allowed', 'important');
-                inps[k].dataset.depLocked = '1';
-            }
-        }
-        _depLockApplied = true;
-    }
-
-    function _unlockDepFields(main) {
-        if (!_depLockApplied) return;
-        if (!main) return;
-        var inps = main.querySelectorAll('input[data-dep-locked="1"]');
-        for (var i = 0; i < inps.length; i++) {
-            inps[i].removeAttribute('readonly');
-            inps[i].style.removeProperty('background-color');
-            inps[i].style.removeProperty('color');
-            inps[i].style.removeProperty('cursor');
-            delete inps[i].dataset.depLocked;
-        }
-        _depLockApplied = false;
-    }
-
     var poll = setInterval(function() { if (init()) clearInterval(poll); }, 150);
-    // Re-apply DEP lock on every poll tick (handles selectbox changes)
-    setInterval(function() {
-        var main = doc.querySelector('section[data-testid="stMain"]');
-        if (main) applyDepLock(main);
-    }, 500);
 })();
 </script>"""
 # Event Card Output settings
@@ -2249,16 +2064,6 @@ _card_pos_js = _card_pos_js.replace('__INP_LOCKED__', str(_inp_l['locked']).lowe
 _card_pos_js = _card_pos_js.replace('__FUNC_TOP__', str(_func_l['top']))
 _card_pos_js = _card_pos_js.replace('__FUNC_RIGHT__', str(_func_l['right']))
 _card_pos_js = _card_pos_js.replace('__FUNC_LOCKED__', str(_func_l['locked']).lower())
-_card_pos_js = _card_pos_js.replace('__SETT_BASE_W__', str(_sett_s.get('base_width', 480)))
-_card_pos_js = _card_pos_js.replace('__SETT_MIN_Z__', str(_sett_s.get('min_zoom', 1.0)))
-_card_pos_js = _card_pos_js.replace('__SETT_MAX_Z__', str(_sett_s.get('max_zoom', 1.8)))
-_card_pos_js = _card_pos_js.replace('__SETT_DEF_Z__', str(_sett_s.get('default_zoom', 1.0)))
-_card_pos_js = _card_pos_js.replace('__SETT_BORDER__', _sett_s.get('border', '2px solid #2c3e50'))
-_card_pos_js = _card_pos_js.replace('__SETT_BORDER_RADIUS__', _sett_s.get('border_radius', '6px'))
-_card_pos_js = _card_pos_js.replace('__SETT_PADDING__', _sett_s.get('padding', '8px 12px 14px 12px'))
-_card_pos_js = _card_pos_js.replace('__SETT_TOP__', str(_sett_l['top']))
-_card_pos_js = _card_pos_js.replace('__SETT_RIGHT__', str(_sett_l['right']))
-_card_pos_js = _card_pos_js.replace('__SETT_LOCKED__', str(_sett_l['locked']).lower())
 _card_pos_js = _card_pos_js.replace('__ME_CH_TOP__', str(_me_chart_l['top']))
 _card_pos_js = _card_pos_js.replace('__ME_CH_RIGHT__', str(_me_chart_l['right']))
 _card_pos_js = _card_pos_js.replace('__ME_CH_LOCKED__', str(_me_chart_l['locked']).lower())
@@ -2276,9 +2081,6 @@ if 'new_entry_mode' not in st.session_state:
 
 if 'confirm_delete' not in st.session_state:
     st.session_state.confirm_delete = False
-
-if 'show_settings' not in st.session_state:
-    st.session_state.show_settings = False
 
 ensure_calculated_fields_ready_once()
 
@@ -2329,19 +2131,8 @@ else:
     defaults['date'] = datetime.now().date()
     defaults['event'] = 'NOON'
 
-# Row 2 disabled if not MID — check live session-state value so that selecting
-# MID in the EVENT widget immediately reveals the counter columns without needing
-# a first "dummy" save.
-_event_ss_key = 'inp_event' + _key_suffix
-_effective_event = st.session_state.get(_event_ss_key, defaults['event'])
-row2_disabled = (_effective_event != "MID")
-
-# ── DEP M/E counter lock: compute previous event values for JS injection ──
-_app_settings_now = _load_app_settings()
-_dep_active = (_app_settings_now.get('dep_stops_me_counters', 'no') == 'yes')
-_dep_prev_vals = {}
-if _dep_active:
-    _dep_prev_vals = _get_prev_event_for_dep(st.session_state.editing_id)
+# Row 2 disabled if not MID (visual only - fields always editable)
+row2_disabled = (defaults['event'] != "MID")
 
 # ============ FLOATING CARDS — draggable via JS, position:fixed ============
 _eco_col = st.container()
@@ -2356,8 +2147,10 @@ if st.session_state.get('_chart_data_version') != _chart_data_version:
     rebuild_chart_data()
     st.session_state['_chart_data_version'] = _chart_data_version
 
-rebuild_chart_data()
 _chart_points = load_chart_data()
+if not _chart_points:
+    rebuild_chart_data()
+    _chart_points = load_chart_data()
 
 _chart_df = pd.DataFrame(_chart_points) if _chart_points else pd.DataFrame()
 _chart_time_ok = False
@@ -2427,7 +2220,7 @@ with _me_chart_col:
                 ]
             )
             _me_alt = (_me_base.mark_line() + _me_base.mark_point(size=2)).add_params(_me_pan).properties(height=340)
-            st.altair_chart(_me_alt, width='stretch')
+            st.altair_chart(_me_alt, use_container_width=True)
         else:
             st.caption('No chart data yet.')
         st.form_submit_button('_', disabled=True, type='secondary')
@@ -2474,7 +2267,7 @@ with _dg_chart_col:
                 ]
             )
             _dg_alt = (_dg_base.mark_line() + _dg_base.mark_point(size=3)).add_params(_dg_pan).properties(height=340)
-            st.altair_chart(_dg_alt, width='stretch')
+            st.altair_chart(_dg_alt, use_container_width=True)
         else:
             st.caption('No chart data yet.')
         st.form_submit_button('_', disabled=True, type='secondary')
@@ -2529,7 +2322,6 @@ def _ov_time(key):
 
 # Build input-field defaults
 _c2_fo_keys = ['me_fo_set', 'dg_fo_set', 'blr_fo_set']
-_c2_fo_defaults = {'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'DO'}
 _c2_input_keys = ['me_hfo_cor_cons', 'me_do_cor_cons',
                   'me_sys_cor_cons', 'me_cyl_cor_cons', 'dg_sys_cor_cons',
                   'hfo_bnkr', 'do_bnkr', 'me_sys_bnkr', 'me_cyl_bnkr', 'dg_sys_bnkr',
@@ -2538,12 +2330,12 @@ c2_def = {}
 if _can_edit:
     for k in _c2_fo_keys:
         v = _ev.get(k)
-        c2_def[k] = str(v) if v and v != 'None' else _c2_fo_defaults[k]
+        c2_def[k] = str(v) if v and v != 'None' else 'HFO'
     for k in _c2_input_keys:
         c2_def[k] = _fmt_c2(_ev.get(k))
 else:
     for k in _c2_fo_keys:
-        c2_def[k] = _c2_fo_defaults[k]
+        c2_def[k] = 'HFO'
     for k in _c2_input_keys:
         c2_def[k] = ''
 
@@ -2589,9 +2381,9 @@ with _eco_col:
 
         def _fmt_fuel(val):
             """Format a float fuel value the same way _ov() does."""
-            if val == 0.0: return '0.00'
+            if val == 0.0: return '--'
             s = f"{val:.2f}".rstrip('0').rstrip('.')
-            return s if s else '0.00'
+            return s if s else '--'
 
         _dg1_dec = _hhmm_to_dec(_ev.get('dg1_diff'))
         _dg2_dec = _hhmm_to_dec(_ev.get('dg2_diff'))
@@ -2611,17 +2403,8 @@ with _eco_col:
             _dg2_do  = _fmt_fuel(round(_dg_do_total  * _dg2_dec / _dg_total_dec, 2))
             _dg3_do  = _fmt_fuel(round(_dg_do_total  * _dg3_dec / _dg_total_dec, 2))
         else:
-            # If DG runtime counters are zero/missing but DG fuel consumption exists
-            # (often from imported data), show DG total in first DG row instead of
-            # hiding all DG rows as '--'.
-            if (_dg_hfo_total > 0) or (_dg_do_total > 0):
-                _dg1_hfo = _fmt_fuel(_dg_hfo_total)
-                _dg1_do  = _fmt_fuel(_dg_do_total)
-                _dg2_hfo = _dg3_hfo = '0.00'
-                _dg2_do  = _dg3_do  = '0.00'
-            else:
-                _dg1_hfo = _dg2_hfo = _dg3_hfo = '0.00'
-                _dg1_do  = _dg2_do  = _dg3_do  = '0.00'
+            _dg1_hfo = _dg2_hfo = _dg3_hfo = '--'
+            _dg1_do  = _dg2_do  = _dg3_do  = '--'
 
         _sec1_rows = ''
         for _lbl, _rk, _hv, _dv in [
@@ -2633,14 +2416,14 @@ with _eco_col:
         ]:
             _sec1_rows += (
                 f'<tr><td class="el">{_lbl}</td><td class="ev">{_ov_time(_rk)}</td>'
-                f'<td class="ev ev-hfo">{_hv}</td>'
-                f'<td class="ev ev-do">{_dv}</td></tr>'
+                f'<td class="ev">{_hv}</td>'
+                f'<td class="ev">{_dv}</td></tr>'
             )
         # ST_TIME row with HFO/DO totals
         _sec1_rows += (
             f'<tr><td class="el">ST_TIME</td><td class="ev">{_ov_time("st_time")}</td>'
-            f'<td class="ev ev-hfo">{_hfo_total_s}</td>'
-            f'<td class="ev ev-do">{_do_total_s}</td></tr>'
+            f'<td class="ev">{_hfo_total_s}</td>'
+            f'<td class="ev">{_do_total_s}</td></tr>'
         )
 
         _sec2_rows = ''
@@ -2650,28 +2433,22 @@ with _eco_col:
             ('TTL PWR [kWh]', 'ttl_pwr', 2, 'D/G SYS', 'dg_sys_acc_cons', 2),
             ('TTL RPM [rev]', 'ttl_rpm', 2, '',         None,              None),
         ]:
-            _oil_cls = ' ev-oil' if _rk2 else ''
-            _oil_lbl_cls = ' el-oil' if _rl else ''
             _sec2_rows += (
                 f'<tr><td class="el">{_ll}</td><td class="ev">{_ov(_lk, _ld)}</td>'
-                f'<td class="el{_oil_lbl_cls}">{_rl}</td>'
-                f'<td class="ev{_oil_cls}">{_ov(_rk2, _rd) if _rk2 else ""}</td></tr>'
+                f'<td class="el">{_rl}</td>'
+                f'<td class="ev">{_ov(_rk2, _rd) if _rk2 else ""}</td></tr>'
             )
 
         _sec3_rows = ''
-        _fuel_type_map = {'HFO': 'hfo', 'DO': 'do'}
         for _ll, _lk, _ld, _rl, _rk2, _rd in [
             ('HFO', 'hfo_rob', 2, 'M/E SYS', 'me_sys_rob', 2),
             ('DO',  'do_rob',  2, 'M/E CYL', 'me_cyl_rob', 2),
             ('TTL', None,      0, 'D/G SYS', 'dg_sys_rob', 2),
         ]:
-            _fc = _fuel_type_map.get(_ll, '')
-            _fuel_lbl_cls = f' el-{_fc}' if _fc else ''
-            _fuel_val_cls = f' ev-{_fc}' if _fc else ''
             _lv = _ov(_lk, _ld) if _lk else _ttl_rob_s
             _sec3_rows += (
-                f'<tr><td class="el{_fuel_lbl_cls}">{_ll}</td><td class="ev{_fuel_val_cls}">{_lv}</td>'
-                f'<td class="el el-oil">{_rl}</td><td class="ev ev-oil">{_ov(_rk2, _rd)}</td></tr>'
+                f'<tr><td class="el">{_ll}</td><td class="ev">{_lv}</td>'
+                f'<td class="el">{_rl}</td><td class="ev">{_ov(_rk2, _rd)}</td></tr>'
             )
 
         _tbl_lf = _eco_s.get('table_label_font','11px')
@@ -2690,7 +2467,7 @@ with _eco_col:
         </style>
         <table class="ect">
             <tr><td class="sh" colspan="2">TOTAL RHS</td><td class="sh" colspan="2">FUEL CONSUMPTION</td></tr>
-            <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub ev-hfo">HFO</td><td class="sub ev-do">DO</td></tr>
+            <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub">HFO</td><td class="sub">DO</td></tr>
             {_sec1_rows}
         </table>
         <table class="ect">
@@ -2719,14 +2496,10 @@ with _eci_col:
             ('DO', 'me_do_cor_cons', 'M/E CYL', 'me_cyl_cor_cons'),
             ('', None, 'D/G SYS', 'dg_sys_cor_cons'),
         ]
-        _lbl_fuel_cls = {'HFO': 'ec-lbl ec-lbl-hfo', 'DO': 'ec-lbl ec-lbl-do'}
-        _lbl_oil_labels = {'M/E SYS', 'M/E CYL', 'D/G SYS'}
         for _i, (_l1, _k1, _l2, _k2) in enumerate(_corr_rows):
-            _lbl1_cls = _lbl_fuel_cls.get(_l1, 'ec-lbl')
-            _lbl2_cls = 'ec-lbl ec-lbl-oil' if _l2 in _lbl_oil_labels else 'ec-lbl'
             _c1, _c2, _c3, _c4 = st.columns([1.25, 1, 1.25, 1], gap='small')
             with _c1:
-                st.markdown(f'<div class="{_lbl1_cls}">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="ec-lbl">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
             with _c2:
                 if _k1:
                     _corr_vals[_k1] = st.text_input(
@@ -2738,7 +2511,7 @@ with _eci_col:
                 else:
                     st.markdown('<div class="ec-out empty">&nbsp;</div>', unsafe_allow_html=True)
             with _c3:
-                st.markdown(f'<div class="{_lbl2_cls}">{_l2}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _corr_vals[_k2] = st.text_input(
                     _k2,
@@ -2757,21 +2530,15 @@ with _eci_col:
             ('SCRUBBER RT', None, 'M/E CYL', 'me_cyl_bnkr'),
             ('', None, 'D/G SYS', 'dg_sys_bnkr'),
         ]
-        _bunkered_lbl_cls = {'HFO': 'ec-lbl ec-lbl-hfo', 'DO': 'ec-lbl ec-lbl-do'}
-        _fo_options = ['HFO', 'DO']
         for _i, (_l1, _k1, _l2, _k2) in enumerate(_fuel_rows):
-            _lbl2_cls = _bunkered_lbl_cls.get(_l2, 'ec-lbl ec-lbl-oil' if _l2 in _lbl_oil_labels else 'ec-lbl')
             _c1, _c2, _c3, _c4 = st.columns([1.25, 1, 1.25, 1], gap='small')
             with _c1:
                 st.markdown(f'<div class="ec-lbl">{_l1 if _l1 else "&nbsp;"}</div>', unsafe_allow_html=True)
             with _c2:
-                if _k1 and _k1 in _c2_fo_keys:
-                    _fo_cur = str(c2_def.get(_k1, _c2_fo_defaults[_k1]))
-                    _fo_idx = _fo_options.index(_fo_cur) if _fo_cur in _fo_options else (_fo_options.index(_c2_fo_defaults[_k1]) if _c2_fo_defaults[_k1] in _fo_options else 0)
-                    _fuel_vals[_k1] = st.selectbox(
+                if _k1:
+                    _fuel_vals[_k1] = st.text_input(
                         _k1,
-                        options=_fo_options,
-                        index=_fo_idx,
+                        value=str(c2_def.get(_k1, '')),
                         key=f'c2_fuel_{_k1}_{_i}{_key_suffix}',
                         label_visibility='collapsed'
                     )
@@ -2780,7 +2547,7 @@ with _eci_col:
                 else:
                     st.markdown('<div class="ec-out empty">&nbsp;</div>', unsafe_allow_html=True)
             with _c3:
-                st.markdown(f'<div class="{_lbl2_cls}">{_l2}</div>', unsafe_allow_html=True)
+                st.markdown(f'<div class="ec-lbl">{_l2}</div>', unsafe_allow_html=True)
             with _c4:
                 _fuel_vals[_k2] = st.text_input(
                     _k2,
@@ -2793,10 +2560,17 @@ with _eci_col:
 
     # Event Card save handler
     if c2_submitted and _eid and _eid > 1:
+        # DEBUG: log raw _fuel_vals to file
+        import json as _dbg_json
+        _dbg_log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'forobs_debug.log')
+        with open(_dbg_log_path, 'a') as _df:
+            _df.write(f"\n=== SAVE EVENT CARD for ID {_eid} ===\n")
+            _df.write(f"_fuel_vals = {_dbg_json.dumps({k: repr(v) for k,v in _fuel_vals.items()})}\n")
+            _df.write(f"_corr_vals = {_dbg_json.dumps({k: repr(v) for k,v in _corr_vals.items()})}\n")
         c2_data = {
             'me_fo_set':        str(_fuel_vals.get('me_fo_set', 'HFO')),
             'dg_fo_set':        str(_fuel_vals.get('dg_fo_set', 'HFO')),
-            'blr_fo_set':       str(_fuel_vals.get('blr_fo_set', 'DO')),
+            'blr_fo_set':       str(_fuel_vals.get('blr_fo_set', 'HFO')),
             'me_sys_calc_cons': safe_float(c2_def.get('me_sys_calc_cons', 0)),
             'dg_sys_calc_cons': safe_float(c2_def.get('dg_sys_calc_cons', 0)),
             'me_sys_cor_cons':  safe_float(_corr_vals.get('me_sys_cor_cons', 0)),
@@ -2810,6 +2584,9 @@ with _eci_col:
             'me_cyl_bnkr':      safe_float(_fuel_vals.get('me_cyl_bnkr', 0)),
             'dg_sys_bnkr':      safe_float(_fuel_vals.get('dg_sys_bnkr', 0)),
         }
+        # DEBUG: log c2_data
+        with open(_dbg_log_path, 'a') as _df:
+            _df.write(f"c2_data = {_dbg_json.dumps({k: repr(v) for k,v in c2_data.items()})}\n")
         update_event(_eid, c2_data)
         with st.spinner(f"Recalculating chain from ID {_eid}…"):
             recalculate_chain(_eid)
@@ -2817,6 +2594,12 @@ with _eci_col:
             rebuild_chart_data()
         except Exception:
             pass
+        # DEBUG: verify DB after save
+        with open(_dbg_log_path, 'a') as _df:
+            _dbg_conn = get_connection()
+            _dbg_row = _dbg_conn.execute(f"SELECT hfo_bnkr, do_bnkr, me_sys_bnkr FROM events WHERE id = {_eid}").fetchone()
+            _df.write(f"DB after save: hfo_bnkr={_dbg_row[0]}, do_bnkr={_dbg_row[1]}, me_sys_bnkr={_dbg_row[2]}\n")
+            _dbg_conn.close()
         st.success(f"Event Card saved for Event #{_eid}!")
         st.rerun()
 
@@ -2826,21 +2609,6 @@ _card_title = f"INPUT CARD  ID_{st.session_state.editing_id}" if st.session_stat
 with _inp_col:
     with st.form(f"input_card_form{_key_suffix}"):
         st.markdown(f'<div class="card-header-right">{_card_title}</div>', unsafe_allow_html=True)
-
-        # Inject DEP lock data for JavaScript
-        _dep_active_js = '1' if _dep_active else '0'
-        _dep_me_rev = str(_dep_prev_vals.get('me_rev_c') or '')
-        _dep_main_fm = str(_dep_prev_vals.get('main_flmtr') or '')
-        _dep_cyl_oil = str(_dep_prev_vals.get('cyl_oil_count') or '')
-        _dep_me_pwr = str(_dep_prev_vals.get('me_pwrmtr') or '')
-        _dep_me_hrs = str(_dep_prev_vals.get('me_hrs') or '')
-        st.markdown(
-            f'<div class="dep-lock-data" data-dep-active="{_dep_active_js}"'
-            f' data-me-rev-c="{_dep_me_rev}" data-main-flmtr="{_dep_main_fm}"'
-            f' data-cyl-oil-count="{_dep_cyl_oil}" data-me-pwrmtr="{_dep_me_pwr}"'
-            f' data-me-hrs="{_dep_me_hrs}" style="display:none"></div>',
-            unsafe_allow_html=True
-        )
 
         row1_fields = [
             ("DATE",          "inp_date",     defaults['date']),
@@ -2880,10 +2648,6 @@ with _inp_col:
         ]
 
         inputs = {}
-        # Pre-populate row2 field keys with empty defaults (right side is MID-only;
-        # if not rendered the save handler still needs these keys in the dict)
-        for _, _r2k, _ in row2_fields:
-            inputs[_r2k] = ''
 
         for i in range(20):
             c1, c2, c3, c4 = st.columns([1.2, 1, 1.2, 1])
@@ -2905,8 +2669,6 @@ with _inp_col:
 
             if i < len(row2_fields):
                 r2_label, r2_key, r2_val = row2_fields[i]
-                # Always render right-side MID fields so they are available immediately.
-                # Save logic below already enforces MID-only validation and persistence.
                 with c3:
                     st.markdown(f'<div class="card-row2-label">{r2_label}</div>', unsafe_allow_html=True)
                 with c4:
@@ -2969,14 +2731,12 @@ with _inp_col:
             ('inp_blr_hrs', 'BOILER HRS'),
         ]
         for fkey, flabel in hrs_field_map:
-            val = str(inputs[fkey]).strip().replace(',', '.')
+            val = str(inputs[fkey]).strip()
             if val:
                 if _re.match(r'^\d+$', val):
                     inputs[fkey] = val + '.00'
-                elif _re.match(r'^\d+\.\d+$', val):
-                    inputs[fkey] = val  # normalise comma→dot
-                else:
-                    errors.append(f"{flabel}: decimal format required (e.g. 12.2, 123.56, 91.90) or whole number")
+                elif not _re.match(r'^\d+\.\d{2}$', val):
+                    errors.append(f"{flabel}: format XX.XX (e.g. 123.06) or whole number")
 
         is_mid = inputs.get('inp_event', 'NOON') == "MID"
         row2_off = not is_mid
@@ -3046,16 +2806,6 @@ with _inp_col:
                 'comp_2': safe_float(inputs['inp_comp2']) if not row2_off else None,
                 'w_comp': safe_float(inputs['inp_wcomp']) if not row2_off else None,
             }
-            # ── DEP M/E counter lock enforcement (server-side) ──
-            if (inputs['inp_event'] == 'DEPARTURE'
-                    and _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes'):
-                _sav_prev = _get_prev_event_for_dep(st.session_state.editing_id)
-                if _sav_prev:
-                    event_data['me_rev_c'] = safe_int(fmt_field('me_rev_c', _sav_prev.get('me_rev_c')))
-                    event_data['main_flmtr'] = safe_float(fmt_field('main_flmtr', _sav_prev.get('main_flmtr')))
-                    event_data['cyl_oil_count'] = safe_int(fmt_field('cyl_oil_count', _sav_prev.get('cyl_oil_count')))
-                    event_data['me_pwrmtr'] = safe_float(fmt_field('me_pwrmtr', _sav_prev.get('me_pwrmtr')))
-                    event_data['me_hrs'] = safe_float(fmt_field('me_hrs', _sav_prev.get('me_hrs')))
             if st.session_state.editing_id:
                 update_event(st.session_state.editing_id, event_data)
                 with st.spinner(f"Recalculating chain from ID {st.session_state.editing_id}…"):
@@ -3085,120 +2835,37 @@ with _inp_col:
         if st.session_state.editing_id:
             st.session_state.confirm_delete = True
         else:
-            st.toast("No event selected to delete. Click an event ID in the logbook first.", icon="⚠️")
+            st.warning("No event selected to delete. Click an event ID in the logbook first.")
 
-# ---- DELETE CONFIRMATION DIALOG ----
-@st.dialog("Confirm Delete")
-def _confirm_delete_dialog():
-    _del_id = st.session_state.editing_id
-    st.warning(f"Are you sure you want to DELETE Event #{_del_id}?")
-    _dc1, _dc2 = st.columns(2)
-    with _dc1:
-        if st.button("YES — Delete", type="primary", use_container_width=True):
-            delete_event(_del_id)
-            recalculate_chain(_del_id)
-            try:
-                rebuild_chart_data()
-            except Exception:
-                pass
-            st.session_state.editing_id = None
-            st.session_state.confirm_delete = False
-            st.rerun()
-    with _dc2:
-        if st.button("NO — Cancel", use_container_width=True):
-            st.session_state.confirm_delete = False
-            st.rerun()
-
-if st.session_state.confirm_delete and st.session_state.editing_id:
-    _confirm_delete_dialog()
-
-# ---- FUNCTIONS PANEL (floating card, includes settings) ----
-_app_settings_now = _load_app_settings()
 with _func_col:
-    with st.form("functions_panel_form"):
-        st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
+    _fp_ok, _fp_url = _ensure_elcalc_server()
+    if _fp_ok:
+        st.link_button("Fuel plan", _fp_url, use_container_width=True)
+    else:
+        st.button("Fuel plan", disabled=True, use_container_width=True, key="_fuel_plan_disabled")
+        st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
 
-        st.markdown(
-            '<div style="font-size:12px;font-weight:700;color:#2c3e50;padding-bottom:3px;">⚙ SETTINGS</div>',
-            unsafe_allow_html=True
-        )
-
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">Does DEP stop M/E counters?</div>', unsafe_allow_html=True)
-        _dep_idx = 0 if _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes' else 1
-        _dep_choice = st.radio(
-            "dep_me_counters",
-            ["Yes", "No"],
-            index=_dep_idx,
-            horizontal=True,
-            label_visibility="collapsed",
-            key="sett_dep_radio"
-        )
-
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:6px 0 2px 0;">Boiler fuel consumption</div>', unsafe_allow_html=True)
-        _blr_idx = 1 if _app_settings_now.get('boiler_fuel_mode', 'flowmeter') == 'user_defined' else 0
-        _blr_choice = st.radio(
-            "boiler_mode",
-            ["Flowmeter", "User Defined [mt/h]"],
-            index=_blr_idx,
-            horizontal=True,
-            label_visibility="collapsed",
-            key="sett_blr_radio"
-        )
-        _blr_rate_val = float(_app_settings_now.get('boiler_user_defined_rate') or 0.0)
-        _blr_rate = st.number_input(
-            "Rate [mt/h]:",
-            value=_blr_rate_val,
-            min_value=0.0,
-            step=0.0001,
-            format="%.4f",
-            key="sett_blr_rate"
-        )
-
-        _hfo_density_val = float(_app_settings_now.get('hfo_density') or 0.919)
-        _do_density_val = float(_app_settings_now.get('do_density') or 0.870)
-        _dens_lbl_col, _dens_inp_col = st.columns([1, 1])
-        with _dens_lbl_col:
-            st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:22px 0 2px 0;">HFO Density [t/m³]</div>', unsafe_allow_html=True)
-            st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:18px 0 2px 0;">DO Density [t/m³]</div>', unsafe_allow_html=True)
-        with _dens_inp_col:
-            _hfo_density = st.number_input(
-                "HFO Density:",
-                value=_hfo_density_val,
-                min_value=0.0,
-                step=0.001,
-                format="%.3f",
-                label_visibility="collapsed",
-                key="sett_hfo_density"
-            )
-            _do_density = st.number_input(
-                "DO Density:",
-                value=_do_density_val,
-                min_value=0.0,
-                step=0.001,
-                format="%.3f",
-                label_visibility="collapsed",
-                key="sett_do_density"
-            )
-
-        _save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
-
-    if _save_settings:
-        _new_settings = {
-            'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
-            'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
-            'boiler_user_defined_rate': float(_blr_rate),
-            'hfo_density': float(_hfo_density),
-            'do_density': float(_do_density),
-        }
-        if not _save_app_settings(_new_settings):
-            st.toast("Failed to save settings (check file permissions).", icon="❌")
-        else:
-            st.session_state['_settings_saved_toast'] = True
-            st.rerun()
-
-# Show settings-saved toast after rerun (so it appears on the fresh render)
-if st.session_state.pop('_settings_saved_toast', False):
-    st.toast("Settings saved!", icon="✅")
+    if st.session_state.confirm_delete and st.session_state.editing_id:
+        del_id = st.session_state.editing_id
+        st.warning(f"Are you sure you want to DELETE Event #{del_id}?")
+        dc1, dc2 = st.columns([1, 1])
+        with dc1:
+            if st.button("YES", type="primary", use_container_width=True, key="confirm_yes"):
+                delete_event(del_id)
+                recalculate_chain(del_id)
+                try:
+                    rebuild_chart_data()
+                except Exception:
+                    pass
+                st.session_state.editing_id = None
+                st.session_state.confirm_delete = False
+                st.success(f"Event #{del_id} deleted!")
+                st.rerun()
+        with dc2:
+            if st.button("NO", use_container_width=True, key="confirm_no"):
+                st.session_state.confirm_delete = False
+                st.rerun()
 
 # ============ LEFT BAR (Sidebar) - Events Logbook ============
 with st.sidebar:
@@ -3254,13 +2921,13 @@ with st.sidebar:
         # ── Controls row: New Entry | Columns | Find ──
         _sb_c1, _sb_c2, _sb_c3, _sb_c4 = st.columns([0.8, 0.8, 2.4, 0.5])
         with _sb_c1:
-            if st.button("\u2795", use_container_width=True, type="secondary"):
+            if st.button("\u2795 New", use_container_width=True, type="secondary"):
                 st.session_state.editing_id = None
                 st.session_state.new_entry_mode = True
                 st.session_state.confirm_delete = False
                 st.rerun()
         with _sb_c2:
-            with st.popover("\U0001F4CB", use_container_width=True):
+            with st.popover("\U0001F4CB Col", use_container_width=True):
                 st.caption("Select columns to load in logbook view")
                 pending = st.multiselect(
                     "Columns",
@@ -3410,7 +3077,7 @@ with st.sidebar:
         selection = st.dataframe(
             styled_df,
             hide_index=True,
-            width='stretch',
+            use_container_width=True,
             height=420,
             column_config=_col_cfg,
             on_select="rerun",
@@ -3434,12 +3101,11 @@ with st.sidebar:
         st.markdown('<div style="font-size:13px;font-weight:700;color:#2c3e50;padding:4px 0 2px 0;margin:0;">\U0001F5A9 EVENT CALCULATOR</div>', unsafe_allow_html=True)
 
         st.markdown('<div style="background:#f4f7fa;border:1px solid #d0dbe6;border-radius:4px;padding:6px 6px 2px 6px;margin:0 0 4px 0;">', unsafe_allow_html=True)
-        _ec_max_id = int(events_df['id'].max()) if not events_df.empty else 2
         _ec_c1, _ec_c2 = st.columns(2)
         with _ec_c1:
             _ec_start_raw = st.text_input("EVENT START ID", value=str(st.session_state.get('_ec_start_id', 2)), key="_ec_start_id_w")
         with _ec_c2:
-            _ec_end_raw = st.text_input("EVENT END ID", value=str(st.session_state.get('_ec_end_id', max(2, _ec_max_id))), key="_ec_end_id_w")
+            _ec_end_raw = st.text_input("EVENT END ID", value=str(st.session_state.get('_ec_end_id', max(2, total_rows + 1))), key="_ec_end_id_w")
         st.markdown('</div>', unsafe_allow_html=True)
         try:
             _ec_start_id = max(2, int(_ec_start_raw))
@@ -3448,7 +3114,7 @@ with st.sidebar:
         try:
             _ec_end_id = max(2, int(_ec_end_raw))
         except (ValueError, TypeError):
-            _ec_end_id = max(2, _ec_max_id)
+            _ec_end_id = max(2, total_rows + 1)
         st.session_state['_ec_start_id'] = _ec_start_id
         st.session_state['_ec_end_id'] = _ec_end_id
 
@@ -3489,7 +3155,7 @@ with st.sidebar:
         def _ec_safe_float(v):
             try:
                 f = float(v) if v is not None and v != '' and str(v) != 'None' else 0.0
-                return 0.0 if f != f else f  # f != f is True only for NaN
+                return f
             except (ValueError, TypeError):
                 return 0.0
 
@@ -3522,10 +3188,7 @@ with st.sidebar:
             if val is None or val == 0 or val == 0.0:
                 return '--'
             try:
-                f = float(val)
-                if f != f:  # NaN check (NaN != NaN is always True)
-                    return '--'
-                s = f"{f:.{decimals}f}".rstrip('0').rstrip('.')
+                s = f"{float(val):.{decimals}f}".rstrip('0').rstrip('.')
                 return s if s and s != '0' else '--'
             except (ValueError, TypeError):
                 return '--'
@@ -3625,15 +3288,13 @@ with st.sidebar:
                     _dg3_do = round(_dg3_do_raw * _do_scale, 2)
                     _blr_do = round(_blr_do_raw * _do_scale, 2)
                 elif _do_cons > 0:
-                    # Fallback: distribute DO only to DGs (primary DO consumers),
-                    # proportional to DG running hours — ME does not consume DO
-                    _dg_rhs_for_do = _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3']
-                    if _dg_rhs_for_do > 0:
-                        _me_do = 0.0
-                        _blr_do = 0.0
-                        _dg1_do = round(_do_cons * _rhs['DG1'] / _dg_rhs_for_do, 2)
-                        _dg2_do = round(_do_cons * _rhs['DG2'] / _dg_rhs_for_do, 2)
-                        _dg3_do = round(_do_cons * _rhs['DG3'] / _dg_rhs_for_do, 2)
+                    _sum_rhs_all = _rhs['ME'] + _rhs['DG1'] + _rhs['DG2'] + _rhs['DG3'] + _rhs['BLR']
+                    if _sum_rhs_all > 0:
+                        _me_do = round(_do_cons * _rhs['ME'] / _sum_rhs_all, 2)
+                        _dg1_do = round(_do_cons * _rhs['DG1'] / _sum_rhs_all, 2)
+                        _dg2_do = round(_do_cons * _rhs['DG2'] / _sum_rhs_all, 2)
+                        _dg3_do = round(_do_cons * _rhs['DG3'] / _sum_rhs_all, 2)
+                        _blr_do = round(_do_cons * _rhs['BLR'] / _sum_rhs_all, 2)
                     else:
                         _me_do = _dg1_do = _dg2_do = _dg3_do = _blr_do = 0.0
                 else:
@@ -3763,15 +3424,15 @@ with st.sidebar:
                 <tr><td class="sh" colspan="4">EVENT CALCULATOR  ID {_ec_sid} → {_ec_eid}</td></tr>
                 <tr><td class="el">TTL TIME</td><td class="ttl" colspan="3">{round(_ttl_min/60, 2)} h</td></tr>
                 <tr><td class="sh" colspan="2">TOTAL RHS</td><td class="sh" colspan="2">FUEL CONSUMPTION</td></tr>
-                <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub ev-hfo">HFO</td><td class="sub ev-do">DO</td></tr>
+                <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub">HFO</td><td class="sub">DO</td></tr>
                 <tr><td class="el">M/E</td><td class="ev">{_ecv(_rhs["ME"])}</td>
-                    <td class="ev ev-hfo">{_ecv(_me_hfo)}</td><td class="ev ev-do">{_ecv(_me_do)}</td></tr>
-                <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_rhs["DG1"])}</td><td class="ev ev-hfo">{_ecv(_dg1_hfo)}</td><td class="ev ev-do">{_ecv(_dg1_do)}</td></tr>
-                <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_rhs["DG2"])}</td><td class="ev ev-hfo">{_ecv(_dg2_hfo)}</td><td class="ev ev-do">{_ecv(_dg2_do)}</td></tr>
-                <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_rhs["DG3"])}</td><td class="ev ev-hfo">{_ecv(_dg3_hfo)}</td><td class="ev ev-do">{_ecv(_dg3_do)}</td></tr>
-                <tr><td class="el">D/G's</td><td class="ev">{_ecv(_rhs["DGs"])}</td><td class="ev ev-hfo">{_ecv(_dg_hfo_disp)}</td><td class="ev ev-do">{_ecv(_dg_do_disp)}</td></tr>
-                <tr><td class="el">BLR</td><td class="ev">{_ecv(_rhs["BLR"])}</td><td class="ev ev-hfo">{_ecv(_blr_hfo)}</td><td class="ev ev-do">{_ecv(_blr_do)}</td></tr>
-                <tr><td class="el">ST_TIME</td><td class="ev">{_ttl_time_s}</td><td class="ev ev-hfo">{_ecv(_hfo_cons)}</td><td class="ev ev-do">{_ecv(_do_cons)}</td></tr>
+                    <td class="ev">{_ecv(_me_hfo)}</td><td class="ev">{_ecv(_me_do)}</td></tr>
+                <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_rhs["DG1"])}</td><td class="ev">{_ecv(_dg1_hfo)}</td><td class="ev">{_ecv(_dg1_do)}</td></tr>
+                <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_rhs["DG2"])}</td><td class="ev">{_ecv(_dg2_hfo)}</td><td class="ev">{_ecv(_dg2_do)}</td></tr>
+                <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_rhs["DG3"])}</td><td class="ev">{_ecv(_dg3_hfo)}</td><td class="ev">{_ecv(_dg3_do)}</td></tr>
+                <tr><td class="el">D/G's</td><td class="ev">{_ecv(_rhs["DGs"])}</td><td class="ev">{_ecv(_dg_hfo_disp)}</td><td class="ev">{_ecv(_dg_do_disp)}</td></tr>
+                <tr><td class="el">BLR</td><td class="ev">{_ecv(_rhs["BLR"])}</td><td class="ev">{_ecv(_blr_hfo)}</td><td class="ev">{_ecv(_blr_do)}</td></tr>
+                <tr><td class="el">ST_TIME</td><td class="ev">{_ttl_time_s}</td><td class="ev">{_ecv(_hfo_cons)}</td><td class="ev">{_ecv(_do_cons)}</td></tr>
                 </table>
                 '''
 
@@ -3779,12 +3440,12 @@ with st.sidebar:
                 _ect_html += f'''
                 <table class="ect2">
                 <tr><td class="sh" colspan="2">FUEL ROB</td><td class="sh" colspan="2">OIL CONSUMPTION</td></tr>
-                <tr><td class="el el-hfo">HFO</td><td class="ev ev-hfo">{_ecv(_fuel_rob["hfo"])}</td>
-                    <td class="el el-oil">M/E SYS</td><td class="ev ev-oil">{_ecv(_oil["me_sys"])}</td></tr>
-                <tr><td class="el el-do">DO</td><td class="ev ev-do">{_ecv(_fuel_rob["do"])}</td>
-                    <td class="el el-oil">M/E CYL</td><td class="ev ev-oil">{_ecv(_oil["me_cyl"])}</td></tr>
+                <tr><td class="el">HFO</td><td class="ev">{_ecv(_fuel_rob["hfo"])}</td>
+                    <td class="el">M/E SYS</td><td class="ev">{_ecv(_oil["me_sys"])}</td></tr>
+                <tr><td class="el">DO</td><td class="ev">{_ecv(_fuel_rob["do"])}</td>
+                    <td class="el">M/E CYL</td><td class="ev">{_ecv(_oil["me_cyl"])}</td></tr>
                 <tr><td class="el">TTL</td><td class="ev">{_ecv(_fuel_rob["ttl"])}</td>
-                    <td class="el el-oil">D/G SYS</td><td class="ev ev-oil">{_ecv(_oil["dg_sys"])}</td></tr>
+                    <td class="el">D/G SYS</td><td class="ev">{_ecv(_oil["dg_sys"])}</td></tr>
                 </table>
                 '''
 
@@ -3793,11 +3454,11 @@ with st.sidebar:
                 <table class="ect2">
                 <tr><td class="sh" colspan="2">POWER PRODUCTION</td><td class="sh" colspan="2">OIL ROB</td></tr>
                 <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_dg_mwh["DG1"])}</td>
-                    <td class="el el-oil">M/E SYS</td><td class="ev ev-oil">{_ecv(_oil_rob["me_sys"])}</td></tr>
+                    <td class="el">M/E SYS</td><td class="ev">{_ecv(_oil_rob["me_sys"])}</td></tr>
                 <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_dg_mwh["DG2"])}</td>
-                    <td class="el el-oil">M/E CYL</td><td class="ev ev-oil">{_ecv(_oil_rob["me_cyl"])}</td></tr>
+                    <td class="el">M/E CYL</td><td class="ev">{_ecv(_oil_rob["me_cyl"])}</td></tr>
                 <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_dg_mwh["DG3"])}</td>
-                    <td class="el el-oil">D/G SYS</td><td class="ev ev-oil">{_ecv(_oil_rob["dg_sys"])}</td></tr>
+                    <td class="el">D/G SYS</td><td class="ev">{_ecv(_oil_rob["dg_sys"])}</td></tr>
                 </table>
                 '''
 
@@ -3828,7 +3489,7 @@ with st.sidebar:
                 # Validation row
                 _scrub_total = _ol_min + _cl_min
                 if _scrub_total > 0 and abs(_scrub_total - _ttl_min) > 1:
-                    st.toast(f"⚠ Scrubber OL+CL ({_ec_min_to_hhmm(_scrub_total)}) ≠ TTL TIME ({_ttl_time_s})", icon="⚠️")
+                    st.warning(f"⚠ Scrubber OL+CL ({_ec_min_to_hhmm(_scrub_total)}) ≠ TTL TIME ({_ttl_time_s})")
             else:
                 st.info("Invalid event IDs. Check start/end range.")
           else:
@@ -3845,3 +3506,12 @@ with st.sidebar:
             st.session_state.editing_id = None
             st.session_state.new_entry_mode = True
             st.rerun()
+
+st.markdown(
+    """
+    <div style="position:fixed; right:12px; bottom:8px; z-index:9999; opacity:0.55; font-size:12px; pointer-events:none;">
+        J
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
