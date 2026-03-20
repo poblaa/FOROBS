@@ -75,7 +75,7 @@ _eci_s = CARD_S.get('event_card_input', {})
 
 # Bump this integer any time the _compute_calculated_values algorithm changes so
 # that ensure_calculated_fields_ready_once() forces a full DB recalculation.
-CALC_VERSION = 2
+CALC_VERSION = 3
 
 # App settings (user-configurable via Settings panel)
 _APP_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_settings.json')
@@ -512,15 +512,21 @@ def _compute_calculated_values(present, previous):
     _hfo_density = float(_fo_settings.get('hfo_density') or 0.919)
     _do_density = float(_fo_settings.get('do_density') or 0.870)
 
-    me_flmtr_diff = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
-    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * _hfo_density) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
-    calc['me_do_calc_cons'] = round((me_flmtr_diff * _do_density) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
-
+    # DG net must be computed first: main_flmtr is installed on the common fuel supply
+    # BEFORE the line splits to ME and DG. When ME and DG use the same fuel type,
+    # main_flmtr measures ME + DG combined; subtract DG net to get true ME-only consumption.
     dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
     dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
     dg_net_diff = max(dg_in_diff - dg_out_diff, 0)
     calc['dg_hfo_calc_cons'] = round((dg_net_diff * _hfo_density) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
     calc['dg_do_calc_cons'] = round((dg_net_diff * _do_density) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
+
+    me_flmtr_raw = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
+    # Subtract DG net volume only when ME and DG consume the same fuel (shared supply line).
+    # When they use different fuels their supply systems are separate, so no subtraction needed.
+    me_flmtr_diff = max(me_flmtr_raw - (dg_net_diff if calc['me_fo_set'] == calc['dg_fo_set'] else 0.0), 0)
+    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * _hfo_density) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
+    calc['me_do_calc_cons'] = round((me_flmtr_diff * _do_density) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
     _blr_mode = _fo_settings.get('boiler_fuel_mode', 'flowmeter')
@@ -535,8 +541,9 @@ def _compute_calculated_values(present, previous):
         calc['blr_do_calc_cons'] = round((blr_flmtr_diff * _do_density) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
 
     # ── HFO / DO corrected consumption: proportional split among same-fuel devices ──
-    # Each device has its own flowmeter (MAIN_FLMTR→ME, BLR_FLMTR→BLR, DG_IN/OUT→DG).
-    # me_hfo_cor_cons / me_do_cor_cons are total fleet corrections entered by the user.
+    # main_flmtr measures ME-only after DG subtraction (see above).
+    # blr_flmtr and dg_in/out_flmtr each have their own independent meters.
+    # me_hfo_cor_cons / me_do_cor_cons are total fleet fuel corrections entered by the user.
     # They are split proportionally only among devices whose fuel setting matches that type.
     # Devices not set to a given fuel have calc_cons=0 so naturally receive a 0 share.
 
