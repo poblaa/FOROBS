@@ -82,6 +82,8 @@ def _load_app_settings():
         'dep_stops_me_counters': 'no',
         'boiler_fuel_mode': 'flowmeter',
         'boiler_user_defined_rate': 0.0,
+        'hfo_density': 0.919,
+        'do_density': 0.870,
     }
     try:
         if os.path.exists(_APP_SETTINGS_PATH):
@@ -507,11 +509,14 @@ def _compute_calculated_values(present, previous):
         calc[fs] = (previous.get(fs) or _fo_set_defaults[fs]) if (not val or val == 'None') else val
 
     # DG consumption first — needed to derive true ME-only from main_flmtr
+    _calc_settings = _load_app_settings()
+    _hfo_dens = float(_calc_settings.get('hfo_density', 0.919))
+    _do_dens = float(_calc_settings.get('do_density', 0.870))
     dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
     dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
     dg_net_diff = max(dg_in_diff - dg_out_diff, 0)
-    calc['dg_hfo_calc_cons'] = round((dg_net_diff * 0.919) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
-    calc['dg_do_calc_cons'] = round((dg_net_diff * 0.870) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
+    calc['dg_hfo_calc_cons'] = round((dg_net_diff * _hfo_dens) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
+    calc['dg_do_calc_cons'] = round((dg_net_diff * _do_dens) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
 
     # ME consumption: main_flmtr measures ME+DG combined.
     # When ME and DG are on the same fuel, subtract DG net to get ME-only.
@@ -520,21 +525,20 @@ def _compute_calculated_values(present, previous):
         me_flmtr_diff = max(main_flmtr_diff - dg_net_diff, 0)
     else:
         me_flmtr_diff = main_flmtr_diff
-    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * 0.919) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
-    calc['me_do_calc_cons'] = round((me_flmtr_diff * 0.870) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
+    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * _hfo_dens) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
+    calc['me_do_calc_cons'] = round((me_flmtr_diff * _do_dens) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
-    _blr_settings = _load_app_settings()
-    _blr_mode = _blr_settings.get('boiler_fuel_mode', 'flowmeter')
+    _blr_mode = _calc_settings.get('boiler_fuel_mode', 'flowmeter')
     if _blr_mode == 'user_defined':
-        _blr_user_rate = float(_blr_settings.get('boiler_user_defined_rate') or 0.0)
+        _blr_user_rate = float(_calc_settings.get('boiler_user_defined_rate') or 0.0)
         _blr_hrs_diff = _decimal_diff_to_decimal_hours(_g(present, 'boiler_hrs'), _g(previous, 'boiler_hrs'))
         _blr_ud_cons = round(_blr_hrs_diff * _blr_user_rate, 4)
         calc['blr_hfo_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'HFO' else 0.0
         calc['blr_do_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'DO' else 0.0
     else:
-        calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * 0.919) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
-        calc['blr_do_calc_cons'] = round((blr_flmtr_diff * 0.870) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
+        calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * _hfo_dens) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
+        calc['blr_do_calc_cons'] = round((blr_flmtr_diff * _do_dens) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
 
     # ── Per-device corrected consumption ──
     # User enters corrected consumption separately for ME, DG's (total), and BLR.
@@ -3062,25 +3066,30 @@ _app_settings_now = _load_app_settings()
 with _func_col:
     with st.form("functions_panel_form"):
         st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-        _fp_ok, _fp_url = _ensure_elcalc_server()
-        _fp_btn_style = (
-            "display:block;width:100%;text-align:center;padding:6px 12px;"
-            "background:#0e1117;color:white;border-radius:6px;text-decoration:none;"
-            "font-size:14px;font-weight:400;border:1px solid rgba(250,250,250,0.2);"
-            "cursor:pointer;margin-bottom:6px;"
+
+        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">HFO density:</div>', unsafe_allow_html=True)
+        _hfo_density_val = float(_app_settings_now.get('hfo_density', 0.919))
+        _hfo_density = st.number_input(
+            "HFO density",
+            value=_hfo_density_val,
+            min_value=0.0,
+            step=0.001,
+            format="%.3f",
+            key="sett_hfo_density",
+            label_visibility="collapsed"
         )
-        if _fp_ok:
-            st.markdown(
-                f'<a href="{_fp_url}" target="_blank" style="{_fp_btn_style}">⛽ Fuel plan</a>',
-                unsafe_allow_html=True
-            )
-        else:
-            _fp_dis_style = _fp_btn_style + "opacity:0.4;cursor:not-allowed;"
-            st.markdown(
-                f'<div style="{_fp_dis_style}">⛽ Fuel plan (unavailable)</div>',
-                unsafe_allow_html=True
-            )
-            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
+
+        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">DO density:</div>', unsafe_allow_html=True)
+        _do_density_val = float(_app_settings_now.get('do_density', 0.870))
+        _do_density = st.number_input(
+            "DO density",
+            value=_do_density_val,
+            min_value=0.0,
+            step=0.001,
+            format="%.3f",
+            key="sett_do_density",
+            label_visibility="collapsed"
+        )
 
         st.markdown(
             '<div style="border-top:1px solid #dde;margin:6px 0 4px 0;'
@@ -3126,6 +3135,8 @@ with _func_col:
             'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
             'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
             'boiler_user_defined_rate': float(_blr_rate),
+            'hfo_density': float(_hfo_density),
+            'do_density': float(_do_density),
         }
         if not _save_app_settings(_new_settings):
             st.toast("Failed to save settings (check file permissions).", icon="❌")
