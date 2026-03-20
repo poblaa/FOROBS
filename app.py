@@ -508,20 +508,15 @@ def _compute_calculated_values(present, previous):
     _hfo_density = float(_fo_settings.get('hfo_density') or 0.919)
     _do_density = float(_fo_settings.get('do_density') or 0.870)
 
-    # DG net must be computed first because main_flmtr is upstream of the ME/DG split.
-    # When ME and DG share the same fuel type, main_flmtr measures ME+DG combined;
-    # we subtract the DG net to obtain the true ME-only consumption.
+    me_flmtr_diff = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
+    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * _hfo_density) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
+    calc['me_do_calc_cons'] = round((me_flmtr_diff * _do_density) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
+
     dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
     dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
     dg_net_diff = max(dg_in_diff - dg_out_diff, 0)
     calc['dg_hfo_calc_cons'] = round((dg_net_diff * _hfo_density) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
     calc['dg_do_calc_cons'] = round((dg_net_diff * _do_density) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
-
-    me_flmtr_raw = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
-    # Subtract DG net volume only when ME and DG consume the same fuel (shared supply line)
-    me_flmtr_diff = max(me_flmtr_raw - (dg_net_diff if calc['me_fo_set'] == calc['dg_fo_set'] else 0.0), 0)
-    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * _hfo_density) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
-    calc['me_do_calc_cons'] = round((me_flmtr_diff * _do_density) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
     _blr_mode = _fo_settings.get('boiler_fuel_mode', 'flowmeter')
