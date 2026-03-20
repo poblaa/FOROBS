@@ -31,8 +31,9 @@ SOURCE_MAP = {
     "me_sys_bnkr": "BM",
     "me_cyl_bnkr": "BN",
     "dg_sys_bnkr": "BO",
-    "me_hfo_cor_cons": "AK",
-    "me_do_cor_cons": "AS",
+    "me_cor_cons": "AK",
+    "dg_cor_cons": "AS",
+    "blr_cor_cons": "AT",
     "me_sys_cor_cons": "AZ",
     "me_cyl_cor_cons": "BA",
     "dg_sys_cor_cons": "BB",
@@ -187,7 +188,7 @@ def transfer_records(db_path, records):
             "me_rev_c", "main_flmtr", "dg_in_flmtr", "dg_out_flmtr", "blr_flmtr",
             "cyl_oil_count", "me_pwrmtr", "me_hrs", "dg1_hrs", "dg2_hrs", "dg3_hrs",
             "boiler_hrs", "hfo_bnkr", "do_bnkr", "me_sys_bnkr", "me_cyl_bnkr",
-            "dg_sys_bnkr", "me_hfo_cor_cons", "me_do_cor_cons", "me_sys_cor_cons",
+            "dg_sys_bnkr", "me_cor_cons", "dg_cor_cons", "blr_cor_cons", "me_sys_cor_cons",
             "me_cyl_cor_cons", "dg_sys_cor_cons", "me_fo_set", "dg_fo_set", "blr_fo_set",
         ]
         insertable = [k for k in insertable if k in event_columns]

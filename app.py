@@ -186,7 +186,11 @@ def init_db():
         ('dg_do_calc_cons', 'REAL'),
         ('blr_hfo_calc_cons', 'REAL'),
         ('blr_do_calc_cons', 'REAL'),
-        # Fuel COR consumption (user correction)
+        # Fuel COR consumption (user correction – per device)
+        ('me_cor_cons', 'REAL'),          # user-entered corrected cons for ME
+        ('dg_cor_cons', 'REAL'),          # user-entered corrected cons for DG's total
+        ('blr_cor_cons', 'REAL'),         # user-entered corrected cons for Boiler
+        # Fuel COR consumption (split by fuel type – computed from above)
         ('me_hfo_cor_cons', 'REAL'),
         ('me_do_cor_cons', 'REAL'),
         ('dg_hfo_cor_cons', 'REAL'),
@@ -525,10 +529,10 @@ def _compute_calculated_values(present, previous):
     calc['dg_hfo_calc_cons'] = round((dg_net_diff * 0.919) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
     calc['dg_do_calc_cons'] = round((dg_net_diff * 0.870) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
 
-    # ── HFO / DO corrected consumption: proportional split among ALL devices ──
-    # User enters total corrected HFO (me_hfo_cor_cons) and total corrected DO (me_do_cor_cons).
-    # These are split proportionally among ME, DG, and BLR based on their calculated consumption,
-    # but only for devices whose fuel setting matches that fuel type.
+    # ── Per-device corrected consumption ──
+    # User enters corrected consumption separately for ME, DG's (total), and BLR.
+    # Each device's correction applies to whichever fuel type (HFO/DO) it is set to.
+    # Devices are INDEPENDENT — ME, DG, BLR each have separate fuel lines.
 
     me_hfo_cal  = calc['me_hfo_calc_cons']
     me_do_cal   = calc['me_do_calc_cons']
@@ -537,63 +541,53 @@ def _compute_calculated_values(present, previous):
     blr_hfo_cal = calc['blr_hfo_calc_cons']
     blr_do_cal  = calc['blr_do_calc_cons']
 
-    hfo_cor_total = _g(present, 'me_hfo_cor_cons')  # user input: total corrected HFO
-    do_cor_total  = _g(present, 'me_do_cor_cons')    # user input: total corrected DO
+    me_cor  = _g(present, 'me_cor_cons')   # user input: corrected ME consumption
+    dg_cor  = _g(present, 'dg_cor_cons')   # user input: corrected DG's total consumption
+    blr_cor = _g(present, 'blr_cor_cons')  # user input: corrected BLR consumption
 
-    # HFO correction — split proportionally among all HFO consumers (ME, DG, BLR)
-    if hfo_cor_total > 0:
-        hfo_cal_sum = me_hfo_cal + dg_hfo_cal + blr_hfo_cal
-        if hfo_cal_sum > 0:
-            calc['me_hfo_acc_cons']  = round(hfo_cor_total * me_hfo_cal  / hfo_cal_sum, 2)
-            calc['dg_hfo_acc_cons']  = round(hfo_cor_total * dg_hfo_cal  / hfo_cal_sum, 2)
-            calc['blr_hfo_acc_cons'] = round(hfo_cor_total * blr_hfo_cal / hfo_cal_sum, 2)
-        else:
-            # No calculated HFO consumption — assign to first HFO device found
-            calc['me_hfo_acc_cons']  = hfo_cor_total if calc['me_fo_set'] == 'HFO' else 0.0
-            calc['dg_hfo_acc_cons']  = 0.0
-            calc['blr_hfo_acc_cons'] = 0.0
-            if calc['me_fo_set'] != 'HFO':
-                if calc['dg_fo_set'] == 'HFO':
-                    calc['dg_hfo_acc_cons'] = hfo_cor_total
-                elif calc['blr_fo_set'] == 'HFO':
-                    calc['blr_hfo_acc_cons'] = hfo_cor_total
-    else:
-        calc['me_hfo_acc_cons']  = me_hfo_cal
-        calc['dg_hfo_acc_cons']  = dg_hfo_cal
-        calc['blr_hfo_acc_cons'] = blr_hfo_cal
-
-    # DO correction — split proportionally among all DO consumers (ME, DG, BLR)
-    if do_cor_total > 0:
-        do_cal_sum = me_do_cal + dg_do_cal + blr_do_cal
-        if do_cal_sum > 0:
-            calc['me_do_acc_cons']  = round(do_cor_total * me_do_cal  / do_cal_sum, 2)
-            calc['dg_do_acc_cons']  = round(do_cor_total * dg_do_cal  / do_cal_sum, 2)
-            calc['blr_do_acc_cons'] = round(do_cor_total * blr_do_cal / do_cal_sum, 2)
-        else:
-            # No calculated DO consumption — assign to first DO device found
+    # ME: use corrected if provided, else use calculated
+    if me_cor > 0:
+        if calc['me_fo_set'] == 'HFO':
+            calc['me_hfo_acc_cons'] = me_cor
             calc['me_do_acc_cons']  = 0.0
-            calc['dg_do_acc_cons']  = 0.0
-            calc['blr_do_acc_cons'] = 0.0
-            if calc['me_fo_set'] == 'DO':
-                calc['me_do_acc_cons'] = do_cor_total
-            elif calc['dg_fo_set'] == 'DO':
-                calc['dg_do_acc_cons'] = do_cor_total
-            elif calc['blr_fo_set'] == 'DO':
-                calc['blr_do_acc_cons'] = do_cor_total
-            else:
-                # No device explicitly set to DO — assign to DG as default DO consumer
-                # (DGs are the typical DO consumers; mirrors how HFO defaults to ME)
-                calc['dg_do_acc_cons'] = do_cor_total
+        else:
+            calc['me_hfo_acc_cons'] = 0.0
+            calc['me_do_acc_cons']  = me_cor
     else:
+        calc['me_hfo_acc_cons'] = me_hfo_cal
         calc['me_do_acc_cons']  = me_do_cal
-        calc['dg_do_acc_cons']  = dg_do_cal
-        calc['blr_do_acc_cons'] = blr_do_cal
 
-    # Store per-device corrected values for DB persistence
-    calc['dg_hfo_cor_cons']  = calc['dg_hfo_acc_cons']  if hfo_cor_total > 0 else 0.0
-    calc['dg_do_cor_cons']   = calc['dg_do_acc_cons']   if do_cor_total > 0 else 0.0
-    calc['blr_hfo_cor_cons'] = calc['blr_hfo_acc_cons'] if hfo_cor_total > 0 else 0.0
-    calc['blr_do_cor_cons']  = calc['blr_do_acc_cons']  if do_cor_total > 0 else 0.0
+    # DG: use corrected if provided, else use calculated
+    if dg_cor > 0:
+        if calc['dg_fo_set'] == 'HFO':
+            calc['dg_hfo_acc_cons'] = dg_cor
+            calc['dg_do_acc_cons']  = 0.0
+        else:
+            calc['dg_hfo_acc_cons'] = 0.0
+            calc['dg_do_acc_cons']  = dg_cor
+    else:
+        calc['dg_hfo_acc_cons'] = dg_hfo_cal
+        calc['dg_do_acc_cons']  = dg_do_cal
+
+    # BLR: use corrected if provided, else use calculated
+    if blr_cor > 0:
+        if calc['blr_fo_set'] == 'HFO':
+            calc['blr_hfo_acc_cons'] = blr_cor
+            calc['blr_do_acc_cons']  = 0.0
+        else:
+            calc['blr_hfo_acc_cons'] = 0.0
+            calc['blr_do_acc_cons']  = blr_cor
+    else:
+        calc['blr_hfo_acc_cons'] = blr_hfo_cal
+        calc['blr_do_acc_cons']  = blr_do_cal
+
+    # Store per-device corrected values split by fuel type for DB / charts
+    calc['me_hfo_cor_cons']  = calc['me_hfo_acc_cons'] if me_cor > 0 else 0.0
+    calc['me_do_cor_cons']   = calc['me_do_acc_cons']  if me_cor > 0 else 0.0
+    calc['dg_hfo_cor_cons']  = calc['dg_hfo_acc_cons'] if dg_cor > 0 else 0.0
+    calc['dg_do_cor_cons']   = calc['dg_do_acc_cons']  if dg_cor > 0 else 0.0
+    calc['blr_hfo_cor_cons'] = calc['blr_hfo_acc_cons'] if blr_cor > 0 else 0.0
+    calc['blr_do_cor_cons']  = calc['blr_do_acc_cons']  if blr_cor > 0 else 0.0
 
     calc['hfo_rob'] = round(
         _g(previous, 'hfo_rob')
@@ -2482,7 +2476,7 @@ def _ov_time(key):
 # Build input-field defaults
 _c2_fo_keys = ['me_fo_set', 'dg_fo_set', 'blr_fo_set']
 _c2_fo_defaults = {'me_fo_set': 'HFO', 'dg_fo_set': 'HFO', 'blr_fo_set': 'DO'}
-_c2_input_keys = ['me_hfo_cor_cons', 'me_do_cor_cons',
+_c2_input_keys = ['me_cor_cons', 'dg_cor_cons', 'blr_cor_cons',
                   'me_sys_cor_cons', 'me_cyl_cor_cons', 'dg_sys_cor_cons',
                   'hfo_bnkr', 'do_bnkr', 'me_sys_bnkr', 'me_cyl_bnkr', 'dg_sys_bnkr',
                   'me_sys_calc_cons', 'dg_sys_calc_cons']
@@ -2658,9 +2652,9 @@ with _eci_col:
         st.markdown('<table class="ect"><tr><td class="sh" colspan="4">CORRECTED CONSUMPTION</td></tr></table>', unsafe_allow_html=True)
         _corr_vals = {}
         _corr_rows = [
-            ('HFO', 'me_hfo_cor_cons', 'M/E SYS', 'me_sys_cor_cons'),
-            ('DO', 'me_do_cor_cons', 'M/E CYL', 'me_cyl_cor_cons'),
-            ('', None, 'D/G SYS', 'dg_sys_cor_cons'),
+            ('ME', 'me_cor_cons', 'M/E SYS', 'me_sys_cor_cons'),
+            ("DG'S", 'dg_cor_cons', 'M/E CYL', 'me_cyl_cor_cons'),
+            ('BLR', 'blr_cor_cons', 'D/G SYS', 'dg_sys_cor_cons'),
         ]
         _lbl_fuel_cls = {'HFO': 'ec-lbl ec-lbl-hfo', 'DO': 'ec-lbl ec-lbl-do'}
         _lbl_oil_labels = {'M/E SYS', 'M/E CYL', 'D/G SYS'}
@@ -2745,8 +2739,11 @@ with _eci_col:
             'me_sys_cor_cons':  safe_float(_corr_vals.get('me_sys_cor_cons', 0)),
             'me_cyl_cor_cons':  safe_float(_corr_vals.get('me_cyl_cor_cons', 0)),
             'dg_sys_cor_cons':  safe_float(_corr_vals.get('dg_sys_cor_cons', 0)),
-            'me_hfo_cor_cons':  safe_float(_corr_vals.get('me_hfo_cor_cons', 0)),
-            'me_do_cor_cons':   safe_float(_corr_vals.get('me_do_cor_cons', 0)),
+            'me_hfo_cor_cons':  0,
+            'me_do_cor_cons':   0,
+            'me_cor_cons':      safe_float(_corr_vals.get('me_cor_cons', 0)),
+            'dg_cor_cons':      safe_float(_corr_vals.get('dg_cor_cons', 0)),
+            'blr_cor_cons':     safe_float(_corr_vals.get('blr_cor_cons', 0)),
             'hfo_bnkr':         safe_float(_fuel_vals.get('hfo_bnkr', 0)),
             'do_bnkr':          safe_float(_fuel_vals.get('do_bnkr', 0)),
             'me_sys_bnkr':      safe_float(_fuel_vals.get('me_sys_bnkr', 0)),

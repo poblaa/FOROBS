@@ -33,8 +33,9 @@ SOURCE_MAP = {
     "me_sys_bnkr": "BM",
     "me_cyl_bnkr": "BN",
     "dg_sys_bnkr": "BO",
-    "me_hfo_cor_cons": "AK",
-    "me_do_cor_cons": "AS",
+    "me_cor_cons": "AK",
+    "dg_cor_cons": "AS",
+    "blr_cor_cons": "AT",
     "me_sys_cor_cons": "AZ",
     "me_cyl_cor_cons": "BA",
     "dg_sys_cor_cons": "BB",
@@ -216,8 +217,9 @@ def transfer_records(db_path, records):
             "me_sys_bnkr",
             "me_cyl_bnkr",
             "dg_sys_bnkr",
-            "me_hfo_cor_cons",
-            "me_do_cor_cons",
+            "me_cor_cons",
+            "dg_cor_cons",
+            "blr_cor_cons",
             "me_sys_cor_cons",
             "me_cyl_cor_cons",
             "dg_sys_cor_cons",
@@ -340,7 +342,7 @@ st.write(f"Rows in source: {len(records)}")
 st.write(f"Selected range: {date_from} → {date_to}")
 st.write(f"Rows to import: {len(selected_records)}")
 
-preview_cols = ["date", "time", "event", "place", "me_rev_c", "main_flmtr", "me_hrs", "hfo_bnkr", "me_hfo_cor_cons"]
+preview_cols = ["date", "time", "event", "place", "me_rev_c", "main_flmtr", "me_hrs", "hfo_bnkr", "me_cor_cons"]
 preview_df = pd.DataFrame([{k: r.get(k) for k in preview_cols} for r in selected_records[:100]])
 st.dataframe(preview_df, hide_index=True, use_container_width=True)
 
