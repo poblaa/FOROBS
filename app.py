@@ -73,6 +73,10 @@ _inp_s = CARD_S.get('input_card', {})
 _eco_s = CARD_S.get('event_card_output', {})
 _eci_s = CARD_S.get('event_card_input', {})
 
+# Bump this integer any time the _compute_calculated_values algorithm changes so
+# that ensure_calculated_fields_ready_once() forces a full DB recalculation.
+CALC_VERSION = 4
+
 # App settings (user-configurable via Settings panel)
 _APP_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_settings.json')
 
@@ -82,6 +86,8 @@ def _load_app_settings():
         'dep_stops_me_counters': 'no',
         'boiler_fuel_mode': 'flowmeter',
         'boiler_user_defined_rate': 0.0,
+        'hfo_density': 0.919,
+        'do_density': 0.870,
     }
     try:
         if os.path.exists(_APP_SETTINGS_PATH):
@@ -502,33 +508,40 @@ def _compute_calculated_values(present, previous):
         val = present.get(fs)
         calc[fs] = (previous.get(fs) or _fo_set_defaults[fs]) if (not val or val == 'None') else val
 
+    _fo_settings = _load_app_settings()
+    _hfo_density = float(_fo_settings.get('hfo_density') or 0.919)
+    _do_density = float(_fo_settings.get('do_density') or 0.870)
+
+    # ME, DG, and BLR have completely separate, independent fuel lines.
+    # main_flmtr → ME only. dg_in/dg_out_flmtr → DG only. blr_flmtr → BLR only.
+    # Never mix or subtract across these meters.
     me_flmtr_diff = max(_g(present, 'main_flmtr') - _g(previous, 'main_flmtr'), 0)
-    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * 0.919) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
-    calc['me_do_calc_cons'] = round((me_flmtr_diff * 0.870) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
+    calc['me_hfo_calc_cons'] = round((me_flmtr_diff * _hfo_density) / 1000, 2) if calc['me_fo_set'] == 'HFO' else 0.0
+    calc['me_do_calc_cons'] = round((me_flmtr_diff * _do_density) / 1000, 2) if calc['me_fo_set'] == 'DO' else 0.0
+
+    dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
+    dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
+    dg_net_diff = max(dg_in_diff - dg_out_diff, 0)
+    calc['dg_hfo_calc_cons'] = round((dg_net_diff * _hfo_density) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
+    calc['dg_do_calc_cons'] = round((dg_net_diff * _do_density) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
 
     blr_flmtr_diff = max(_g(present, 'blr_flmtr') - _g(previous, 'blr_flmtr'), 0)
-    _blr_settings = _load_app_settings()
-    _blr_mode = _blr_settings.get('boiler_fuel_mode', 'flowmeter')
+    _blr_mode = _fo_settings.get('boiler_fuel_mode', 'flowmeter')
     if _blr_mode == 'user_defined':
-        _blr_user_rate = float(_blr_settings.get('boiler_user_defined_rate') or 0.0)
+        _blr_user_rate = float(_fo_settings.get('boiler_user_defined_rate') or 0.0)
         _blr_hrs_diff = _decimal_diff_to_decimal_hours(_g(present, 'boiler_hrs'), _g(previous, 'boiler_hrs'))
         _blr_ud_cons = round(_blr_hrs_diff * _blr_user_rate, 4)
         calc['blr_hfo_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'HFO' else 0.0
         calc['blr_do_calc_cons'] = _blr_ud_cons if calc['blr_fo_set'] == 'DO' else 0.0
     else:
-        calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * 0.919) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
-        calc['blr_do_calc_cons'] = round((blr_flmtr_diff * 0.870) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
+        calc['blr_hfo_calc_cons'] = round((blr_flmtr_diff * _hfo_density) / 1000, 2) if calc['blr_fo_set'] == 'HFO' else 0.0
+        calc['blr_do_calc_cons'] = round((blr_flmtr_diff * _do_density) / 1000, 2) if calc['blr_fo_set'] == 'DO' else 0.0
 
-    dg_in_diff = _g(present, 'dg_in_flmtr') - _g(previous, 'dg_in_flmtr')
-    dg_out_diff = _g(present, 'dg_out_flmtr') - _g(previous, 'dg_out_flmtr')
-    dg_net_diff = max(dg_in_diff - dg_out_diff, 0)
-    calc['dg_hfo_calc_cons'] = round((dg_net_diff * 0.919) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
-    calc['dg_do_calc_cons'] = round((dg_net_diff * 0.870) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
-
-    # ── HFO / DO corrected consumption: proportional split among ALL devices ──
-    # User enters total corrected HFO (me_hfo_cor_cons) and total corrected DO (me_do_cor_cons).
-    # These are split proportionally among ME, DG, and BLR based on their calculated consumption,
-    # but only for devices whose fuel setting matches that fuel type.
+    # ── HFO / DO corrected consumption: proportional split among same-fuel devices ──
+    # main_flmtr → ME only, dg_in/out_flmtr → DG only, blr_flmtr → BLR only (independent).
+    # me_hfo_cor_cons / me_do_cor_cons are total fleet fuel corrections entered by the user.
+    # They are split proportionally only among devices whose fuel setting matches that type.
+    # Devices not set to a given fuel have calc_cons=0 so naturally receive a 0 share.
 
     me_hfo_cal  = calc['me_hfo_calc_cons']
     me_do_cal   = calc['me_do_calc_cons']
@@ -548,15 +561,16 @@ def _compute_calculated_values(present, previous):
             calc['dg_hfo_acc_cons']  = round(hfo_cor_total * dg_hfo_cal  / hfo_cal_sum, 2)
             calc['blr_hfo_acc_cons'] = round(hfo_cor_total * blr_hfo_cal / hfo_cal_sum, 2)
         else:
-            # No calculated HFO consumption — assign to first HFO device found
-            calc['me_hfo_acc_cons']  = hfo_cor_total if calc['me_fo_set'] == 'HFO' else 0.0
+            # No flowmeter data — assign to first device set to HFO
+            calc['me_hfo_acc_cons']  = 0.0
             calc['dg_hfo_acc_cons']  = 0.0
             calc['blr_hfo_acc_cons'] = 0.0
-            if calc['me_fo_set'] != 'HFO':
-                if calc['dg_fo_set'] == 'HFO':
-                    calc['dg_hfo_acc_cons'] = hfo_cor_total
-                elif calc['blr_fo_set'] == 'HFO':
-                    calc['blr_hfo_acc_cons'] = hfo_cor_total
+            if calc['me_fo_set'] == 'HFO':
+                calc['me_hfo_acc_cons'] = hfo_cor_total
+            elif calc['dg_fo_set'] == 'HFO':
+                calc['dg_hfo_acc_cons'] = hfo_cor_total
+            elif calc['blr_fo_set'] == 'HFO':
+                calc['blr_hfo_acc_cons'] = hfo_cor_total
     else:
         calc['me_hfo_acc_cons']  = me_hfo_cal
         calc['dg_hfo_acc_cons']  = dg_hfo_cal
@@ -570,7 +584,7 @@ def _compute_calculated_values(present, previous):
             calc['dg_do_acc_cons']  = round(do_cor_total * dg_do_cal  / do_cal_sum, 2)
             calc['blr_do_acc_cons'] = round(do_cor_total * blr_do_cal / do_cal_sum, 2)
         else:
-            # No calculated DO consumption — assign to first DO device found
+            # No flowmeter data — assign to first device set to DO
             calc['me_do_acc_cons']  = 0.0
             calc['dg_do_acc_cons']  = 0.0
             calc['blr_do_acc_cons'] = 0.0
@@ -580,10 +594,6 @@ def _compute_calculated_values(present, previous):
                 calc['dg_do_acc_cons'] = do_cor_total
             elif calc['blr_fo_set'] == 'DO':
                 calc['blr_do_acc_cons'] = do_cor_total
-            else:
-                # No device explicitly set to DO — assign to DG as default DO consumer
-                # (DGs are the typical DO consumers; mirrors how HFO defaults to ME)
-                calc['dg_do_acc_cons'] = do_cor_total
     else:
         calc['me_do_acc_cons']  = me_do_cal
         calc['dg_do_acc_cons']  = dg_do_cal
@@ -591,9 +601,9 @@ def _compute_calculated_values(present, previous):
 
     # Store per-device corrected values for DB persistence
     calc['dg_hfo_cor_cons']  = calc['dg_hfo_acc_cons']  if hfo_cor_total > 0 else 0.0
-    calc['dg_do_cor_cons']   = calc['dg_do_acc_cons']   if do_cor_total > 0 else 0.0
+    calc['dg_do_cor_cons']   = calc['dg_do_acc_cons']   if do_cor_total  > 0 else 0.0
     calc['blr_hfo_cor_cons'] = calc['blr_hfo_acc_cons'] if hfo_cor_total > 0 else 0.0
-    calc['blr_do_cor_cons']  = calc['blr_do_acc_cons']  if do_cor_total > 0 else 0.0
+    calc['blr_do_cor_cons']  = calc['blr_do_acc_cons']  if do_cor_total  > 0 else 0.0
 
     calc['hfo_rob'] = round(
         _g(previous, 'hfo_rob')
@@ -651,22 +661,25 @@ def _compute_chart_point(ev):
     time_s = str(ev.get('time', ''))
 
     # M/E calculated SFOC: fuel [mT] / ttl_pwr [kWh] * 1_000_000 = g/kWh
-    me_calc_hfo = _g(ev, 'me_hfo_acc_cons')
-    me_calc_do  = _g(ev, 'me_do_acc_cons')
-    me_calc_fuel = me_calc_hfo + me_calc_do  # total ME fuel in mT
+    me_calc_hfo = _g(ev, 'me_hfo_calc_cons')
+    me_calc_do  = _g(ev, 'me_do_calc_cons')
+    me_calc_fuel = me_calc_hfo + me_calc_do  # total ME fuel in mT (from flowmeter)
     ttl_pwr = _g(ev, 'ttl_pwr')
 
     me_sfoc_calc = 0.0
     if ttl_pwr > 0 and me_calc_fuel > 0:
         me_sfoc_calc = round(me_calc_fuel / ttl_pwr * 1_000_000, 2)
 
-    # M/E corrected SFOC
-    me_cor_hfo = _g(ev, 'me_hfo_cor_cons')
-    me_cor_do  = _g(ev, 'me_do_cor_cons')
-    me_cor_fuel = me_cor_hfo + me_cor_do
+    # M/E corrected SFOC (only shown when user has entered a corrected value)
+    me_hfo_cor_input = _g(ev, 'me_hfo_cor_cons')
+    me_do_cor_input  = _g(ev, 'me_do_cor_cons')
     me_sfoc_cor = 0.0
-    if ttl_pwr > 0 and me_cor_fuel > 0:
-        me_sfoc_cor = round(me_cor_fuel / ttl_pwr * 1_000_000, 2)
+    if (me_hfo_cor_input > 0 or me_do_cor_input > 0) and ttl_pwr > 0:
+        me_acc_hfo = _g(ev, 'me_hfo_acc_cons')
+        me_acc_do  = _g(ev, 'me_do_acc_cons')
+        me_acc_fuel = me_acc_hfo + me_acc_do
+        if me_acc_fuel > 0:
+            me_sfoc_cor = round(me_acc_fuel / ttl_pwr * 1_000_000, 2)
 
     # D/G total running time (minutes)
     dg1_min = _hhmm_to_minutes(ev.get('dg1_diff'))
@@ -858,7 +871,8 @@ def recalculate_chain(from_id):
 
 
 def ensure_calculated_fields_ready_once():
-    """Run one-time chain recalculation when transferred rows miss derived values."""
+    """Run one-time chain recalculation when transferred rows miss derived values,
+    or when the calculation algorithm version has been bumped (CALC_VERSION)."""
     if st.session_state.get('_calc_ready_checked', False):
         return
     st.session_state['_calc_ready_checked'] = True
@@ -888,8 +902,19 @@ def ensure_calculated_fields_ready_once():
         ).fetchone()[0] or 0)
         conn.close()
 
-        if missing_count > 0:
+        # Check whether the stored calc version matches the current algorithm.
+        # If it does not (or is absent), force a full recalculation so that DB
+        # values computed with an older formula are replaced with correct ones.
+        _settings = _load_app_settings()
+        stored_version = int(_settings.get('calc_version', 0))
+        needs_version_recalc = stored_version < CALC_VERSION
+
+        if missing_count > 0 or needs_version_recalc:
             recalculate_chain(2)
+            # Persist updated version so this recalculation runs only once
+            if needs_version_recalc:
+                _settings['calc_version'] = CALC_VERSION
+                _save_app_settings(_settings)
     except Exception:
         pass
 
@@ -2055,6 +2080,31 @@ _card_pos_js = """<script>
         }
         bar.addEventListener('mousedown', startDrag);
         bar.addEventListener('touchstart', startDrag, {passive: false});
+
+        // For functions_panel: wrap the scrollable body content so drag bar stays pinned
+        if (key === 'functions_panel' && !form.querySelector('.fp-scroll-body')) {
+            var scrollBody = doc.createElement('div');
+            scrollBody.className = 'fp-scroll-body';
+            scrollBody.style.cssText = 'overflow-y:auto;overflow-x:hidden;max-height:70vh;margin:0 -4px;padding:0 4px;';
+            // Collect all direct children that are not the drag bar or resize handle
+            var toMove = [];
+            for (var ci = 0; ci < form.childNodes.length; ci++) {
+                var ch = form.childNodes[ci];
+                if (ch === bar) continue;
+                if (ch.classList && ch.classList.contains('card-resize-handle')) continue;
+                toMove.push(ch);
+            }
+            for (var mi = 0; mi < toMove.length; mi++) {
+                scrollBody.appendChild(toMove[mi]);
+            }
+            // Insert scroll body after drag bar, before resize handle
+            var resizeHandle = form.querySelector('.card-resize-handle');
+            if (resizeHandle) {
+                form.insertBefore(scrollBody, resizeHandle);
+            } else {
+                form.appendChild(scrollBody);
+            }
+        }
     }
 
     function init() {
@@ -2306,10 +2356,8 @@ if st.session_state.get('_chart_data_version') != _chart_data_version:
     rebuild_chart_data()
     st.session_state['_chart_data_version'] = _chart_data_version
 
+rebuild_chart_data()
 _chart_points = load_chart_data()
-if not _chart_points:
-    rebuild_chart_data()
-    _chart_points = load_chart_data()
 
 _chart_df = pd.DataFrame(_chart_points) if _chart_points else pd.DataFrame()
 _chart_time_ok = False
@@ -3060,29 +3108,9 @@ _app_settings_now = _load_app_settings()
 with _func_col:
     with st.form("functions_panel_form"):
         st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
-        _fp_ok, _fp_url = _ensure_elcalc_server()
-        _fp_btn_style = (
-            "display:block;width:100%;text-align:center;padding:6px 12px;"
-            "background:#0e1117;color:white;border-radius:6px;text-decoration:none;"
-            "font-size:14px;font-weight:400;border:1px solid rgba(250,250,250,0.2);"
-            "cursor:pointer;margin-bottom:6px;"
-        )
-        if _fp_ok:
-            st.markdown(
-                f'<a href="{_fp_url}" target="_blank" style="{_fp_btn_style}">⛽ Fuel plan</a>',
-                unsafe_allow_html=True
-            )
-        else:
-            _fp_dis_style = _fp_btn_style + "opacity:0.4;cursor:not-allowed;"
-            st.markdown(
-                f'<div style="{_fp_dis_style}">⛽ Fuel plan (unavailable)</div>',
-                unsafe_allow_html=True
-            )
-            st.caption("Fuel plan unavailable (missing elcalc folder or local port blocked)")
 
         st.markdown(
-            '<div style="border-top:1px solid #dde;margin:6px 0 4px 0;'
-            'font-size:12px;font-weight:700;color:#2c3e50;padding-top:5px;">⚙ SETTINGS</div>',
+            '<div style="font-size:12px;font-weight:700;color:#2c3e50;padding-bottom:3px;">⚙ SETTINGS</div>',
             unsafe_allow_html=True
         )
 
@@ -3117,6 +3145,32 @@ with _func_col:
             key="sett_blr_rate"
         )
 
+        _hfo_density_val = float(_app_settings_now.get('hfo_density') or 0.919)
+        _do_density_val = float(_app_settings_now.get('do_density') or 0.870)
+        _dens_lbl_col, _dens_inp_col = st.columns([1, 1])
+        with _dens_lbl_col:
+            st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:22px 0 2px 0;">HFO Density [t/m³]</div>', unsafe_allow_html=True)
+            st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:18px 0 2px 0;">DO Density [t/m³]</div>', unsafe_allow_html=True)
+        with _dens_inp_col:
+            _hfo_density = st.number_input(
+                "HFO Density:",
+                value=_hfo_density_val,
+                min_value=0.0,
+                step=0.001,
+                format="%.3f",
+                label_visibility="collapsed",
+                key="sett_hfo_density"
+            )
+            _do_density = st.number_input(
+                "DO Density:",
+                value=_do_density_val,
+                min_value=0.0,
+                step=0.001,
+                format="%.3f",
+                label_visibility="collapsed",
+                key="sett_do_density"
+            )
+
         _save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
 
     if _save_settings:
@@ -3124,6 +3178,8 @@ with _func_col:
             'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
             'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
             'boiler_user_defined_rate': float(_blr_rate),
+            'hfo_density': float(_hfo_density),
+            'do_density': float(_do_density),
         }
         if not _save_app_settings(_new_settings):
             st.toast("Failed to save settings (check file permissions).", icon="❌")
