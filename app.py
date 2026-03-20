@@ -530,10 +530,11 @@ def _compute_calculated_values(present, previous):
     calc['dg_hfo_calc_cons'] = round((dg_net_diff * _hfo_density) / 1000, 2) if calc['dg_fo_set'] == 'HFO' else 0.0
     calc['dg_do_calc_cons'] = round((dg_net_diff * _do_density) / 1000, 2) if calc['dg_fo_set'] == 'DO' else 0.0
 
-    # ── HFO / DO accepted consumption: each device has a dedicated flowmeter ──
-    # MAIN_FLMTR → ME only, BLR_FLMTR → Boiler only, DG_IN/OUT → Diesel generators only.
-    # me_hfo_cor_cons and me_do_cor_cons are ME-specific manual corrections.
-    # DG and BLR always use their own flowmeter-calculated values (no user correction).
+    # ── HFO / DO corrected consumption: proportional split among same-fuel devices ──
+    # Each device has its own flowmeter (MAIN_FLMTR→ME, BLR_FLMTR→BLR, DG_IN/OUT→DG).
+    # me_hfo_cor_cons / me_do_cor_cons are total fleet corrections entered by the user.
+    # They are split proportionally only among devices whose fuel setting matches that type.
+    # Devices not set to a given fuel have calc_cons=0 so naturally receive a 0 share.
 
     me_hfo_cal  = calc['me_hfo_calc_cons']
     me_do_cal   = calc['me_do_calc_cons']
@@ -542,24 +543,60 @@ def _compute_calculated_values(present, previous):
     blr_hfo_cal = calc['blr_hfo_calc_cons']
     blr_do_cal  = calc['blr_do_calc_cons']
 
-    hfo_cor_total = _g(present, 'me_hfo_cor_cons')  # user input: ME corrected HFO
-    do_cor_total  = _g(present, 'me_do_cor_cons')    # user input: ME corrected DO
+    hfo_cor_total = _g(present, 'me_hfo_cor_cons')  # user input: total corrected HFO
+    do_cor_total  = _g(present, 'me_do_cor_cons')    # user input: total corrected DO
 
-    # ME: use correction if entered, otherwise use flowmeter-calculated value
-    calc['me_hfo_acc_cons']  = hfo_cor_total if hfo_cor_total > 0 else me_hfo_cal
-    calc['me_do_acc_cons']   = do_cor_total  if do_cor_total  > 0 else me_do_cal
+    # HFO correction — split proportionally among all HFO consumers (ME, DG, BLR)
+    if hfo_cor_total > 0:
+        hfo_cal_sum = me_hfo_cal + dg_hfo_cal + blr_hfo_cal
+        if hfo_cal_sum > 0:
+            calc['me_hfo_acc_cons']  = round(hfo_cor_total * me_hfo_cal  / hfo_cal_sum, 2)
+            calc['dg_hfo_acc_cons']  = round(hfo_cor_total * dg_hfo_cal  / hfo_cal_sum, 2)
+            calc['blr_hfo_acc_cons'] = round(hfo_cor_total * blr_hfo_cal / hfo_cal_sum, 2)
+        else:
+            # No flowmeter data — assign to first device set to HFO
+            calc['me_hfo_acc_cons']  = 0.0
+            calc['dg_hfo_acc_cons']  = 0.0
+            calc['blr_hfo_acc_cons'] = 0.0
+            if calc['me_fo_set'] == 'HFO':
+                calc['me_hfo_acc_cons'] = hfo_cor_total
+            elif calc['dg_fo_set'] == 'HFO':
+                calc['dg_hfo_acc_cons'] = hfo_cor_total
+            elif calc['blr_fo_set'] == 'HFO':
+                calc['blr_hfo_acc_cons'] = hfo_cor_total
+    else:
+        calc['me_hfo_acc_cons']  = me_hfo_cal
+        calc['dg_hfo_acc_cons']  = dg_hfo_cal
+        calc['blr_hfo_acc_cons'] = blr_hfo_cal
 
-    # DG and BLR: always use their own dedicated flowmeter-calculated values
-    calc['dg_hfo_acc_cons']  = dg_hfo_cal
-    calc['dg_do_acc_cons']   = dg_do_cal
-    calc['blr_hfo_acc_cons'] = blr_hfo_cal
-    calc['blr_do_acc_cons']  = blr_do_cal
+    # DO correction — split proportionally among all DO consumers (ME, DG, BLR)
+    if do_cor_total > 0:
+        do_cal_sum = me_do_cal + dg_do_cal + blr_do_cal
+        if do_cal_sum > 0:
+            calc['me_do_acc_cons']  = round(do_cor_total * me_do_cal  / do_cal_sum, 2)
+            calc['dg_do_acc_cons']  = round(do_cor_total * dg_do_cal  / do_cal_sum, 2)
+            calc['blr_do_acc_cons'] = round(do_cor_total * blr_do_cal / do_cal_sum, 2)
+        else:
+            # No flowmeter data — assign to first device set to DO
+            calc['me_do_acc_cons']  = 0.0
+            calc['dg_do_acc_cons']  = 0.0
+            calc['blr_do_acc_cons'] = 0.0
+            if calc['me_fo_set'] == 'DO':
+                calc['me_do_acc_cons'] = do_cor_total
+            elif calc['dg_fo_set'] == 'DO':
+                calc['dg_do_acc_cons'] = do_cor_total
+            elif calc['blr_fo_set'] == 'DO':
+                calc['blr_do_acc_cons'] = do_cor_total
+    else:
+        calc['me_do_acc_cons']  = me_do_cal
+        calc['dg_do_acc_cons']  = dg_do_cal
+        calc['blr_do_acc_cons'] = blr_do_cal
 
-    # DG and BLR have no user-entered corrections (dedicated flowmeters are authoritative)
-    calc['dg_hfo_cor_cons']  = 0.0
-    calc['dg_do_cor_cons']   = 0.0
-    calc['blr_hfo_cor_cons'] = 0.0
-    calc['blr_do_cor_cons']  = 0.0
+    # Store per-device corrected values for DB persistence
+    calc['dg_hfo_cor_cons']  = calc['dg_hfo_acc_cons']  if hfo_cor_total > 0 else 0.0
+    calc['dg_do_cor_cons']   = calc['dg_do_acc_cons']   if do_cor_total  > 0 else 0.0
+    calc['blr_hfo_cor_cons'] = calc['blr_hfo_acc_cons'] if hfo_cor_total > 0 else 0.0
+    calc['blr_do_cor_cons']  = calc['blr_do_acc_cons']  if do_cor_total  > 0 else 0.0
 
     calc['hfo_rob'] = round(
         _g(previous, 'hfo_rob')
