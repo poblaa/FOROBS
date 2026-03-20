@@ -73,6 +73,10 @@ _inp_s = CARD_S.get('input_card', {})
 _eco_s = CARD_S.get('event_card_output', {})
 _eci_s = CARD_S.get('event_card_input', {})
 
+# Bump this integer any time the _compute_calculated_values algorithm changes so
+# that ensure_calculated_fields_ready_once() forces a full DB recalculation.
+CALC_VERSION = 2
+
 # App settings (user-configurable via Settings panel)
 _APP_SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app_settings.json')
 
@@ -864,7 +868,8 @@ def recalculate_chain(from_id):
 
 
 def ensure_calculated_fields_ready_once():
-    """Run one-time chain recalculation when transferred rows miss derived values."""
+    """Run one-time chain recalculation when transferred rows miss derived values,
+    or when the calculation algorithm version has been bumped (CALC_VERSION)."""
     if st.session_state.get('_calc_ready_checked', False):
         return
     st.session_state['_calc_ready_checked'] = True
@@ -894,8 +899,19 @@ def ensure_calculated_fields_ready_once():
         ).fetchone()[0] or 0)
         conn.close()
 
-        if missing_count > 0:
+        # Check whether the stored calc version matches the current algorithm.
+        # If it does not (or is absent), force a full recalculation so that DB
+        # values computed with an older formula are replaced with correct ones.
+        _settings = _load_app_settings()
+        stored_version = int(_settings.get('calc_version', 0))
+        needs_version_recalc = stored_version < CALC_VERSION
+
+        if missing_count > 0 or needs_version_recalc:
             recalculate_chain(2)
+            # Persist updated version so this recalculation runs only once
+            if needs_version_recalc:
+                _settings['calc_version'] = CALC_VERSION
+                _save_app_settings(_settings)
     except Exception:
         pass
 
