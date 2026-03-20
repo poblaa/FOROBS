@@ -2589,9 +2589,9 @@ with _eco_col:
 
         def _fmt_fuel(val):
             """Format a float fuel value the same way _ov() does."""
-            if val == 0.0: return '--'
+            if val == 0.0: return '0.00'
             s = f"{val:.2f}".rstrip('0').rstrip('.')
-            return s if s else '--'
+            return s if s else '0.00'
 
         _dg1_dec = _hhmm_to_dec(_ev.get('dg1_diff'))
         _dg2_dec = _hhmm_to_dec(_ev.get('dg2_diff'))
@@ -2611,8 +2611,17 @@ with _eco_col:
             _dg2_do  = _fmt_fuel(round(_dg_do_total  * _dg2_dec / _dg_total_dec, 2))
             _dg3_do  = _fmt_fuel(round(_dg_do_total  * _dg3_dec / _dg_total_dec, 2))
         else:
-            _dg1_hfo = _dg2_hfo = _dg3_hfo = '--'
-            _dg1_do  = _dg2_do  = _dg3_do  = '--'
+            # If DG runtime counters are zero/missing but DG fuel consumption exists
+            # (often from imported data), show DG total in first DG row instead of
+            # hiding all DG rows as '--'.
+            if (_dg_hfo_total > 0) or (_dg_do_total > 0):
+                _dg1_hfo = _fmt_fuel(_dg_hfo_total)
+                _dg1_do  = _fmt_fuel(_dg_do_total)
+                _dg2_hfo = _dg3_hfo = '0.00'
+                _dg2_do  = _dg3_do  = '0.00'
+            else:
+                _dg1_hfo = _dg2_hfo = _dg3_hfo = '0.00'
+                _dg1_do  = _dg2_do  = _dg3_do  = '0.00'
 
         _sec1_rows = ''
         for _lbl, _rk, _hv, _dv in [
