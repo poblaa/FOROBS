@@ -8,15 +8,18 @@ import pandas as pd
 import altair as alt
 import sqlite3
 from datetime import datetime
+from calendar import monthrange
 import os
 import json
 import time
 import sys
 import socket
 import subprocess
+import shutil
 
 # Database setup
-DB_PATH = "logbook.db"
+DB_PATH = os.environ.get("FOROBS_DB_PATH", "logbook.db")
+PMS_DB_PATH = os.environ.get("FOROBS_PMS_DB_PATH", "pms.db")
 ELCALC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'elcalc')
 ELCALC_PORT = 8502
 
@@ -84,6 +87,7 @@ def _load_app_settings():
         'boiler_user_defined_rate': 0.0,
         'hfo_density': 0.919,
         'do_density': 0.870,
+        'external_db_path': '',
     }
     try:
         if os.path.exists(_APP_SETTINGS_PATH):
@@ -102,6 +106,130 @@ def _save_app_settings(settings):
         return True
     except OSError:
         return False
+
+
+def sync_external_robs_database(external_folder: str):
+    """Create/update lightweight external ROBS DB + JS export + HTML reader."""
+    target_dir = str(external_folder or '').strip()
+    if not target_dir:
+        return False, "External DB path is empty"
+
+    try:
+        os.makedirs(target_dir, exist_ok=True)
+    except OSError as e:
+        return False, f"Cannot create/open folder: {e}"
+
+    # 1) Read source rows from main DB
+    conn_src = None
+    try:
+        conn_src = get_connection()
+        src_df = pd.read_sql_query(
+            """
+            SELECT
+                id AS ID,
+                date AS DATE,
+                time AS TIME,
+                place AS PLACE,
+                event AS EVENT,
+                me_sys_rob AS ME_SYS_ROB,
+                me_cyl_rob AS ME_CYL_ROB,
+                dg_sys_rob AS DG_SYS_ROB,
+                hfo_rob AS HFO_ROB,
+                do_rob AS DO_ROB
+            FROM events
+            ORDER BY id ASC
+            """,
+            conn_src,
+        )
+    except Exception as e:
+        return False, f"Read source DB failed: {e}"
+    finally:
+        if conn_src is not None:
+            conn_src.close()
+
+    # 2) Rebuild lightweight external sqlite db
+    robs_db_path = os.path.join(target_dir, 'logbook_robs.db')
+    try:
+        conn_dst = sqlite3.connect(robs_db_path)
+        c = conn_dst.cursor()
+        c.execute(
+            '''
+            CREATE TABLE IF NOT EXISTS events_robs (
+                ID INTEGER PRIMARY KEY,
+                DATE TEXT,
+                TIME TEXT,
+                PLACE TEXT,
+                EVENT TEXT,
+                ME_SYS_ROB REAL,
+                ME_CYL_ROB REAL,
+                DG_SYS_ROB REAL,
+                HFO_ROB REAL,
+                DO_ROB REAL
+            )
+            '''
+        )
+        c.execute('DELETE FROM events_robs')
+
+        insert_sql = '''
+            INSERT INTO events_robs (
+                ID, DATE, TIME, PLACE, EVENT,
+                ME_SYS_ROB, ME_CYL_ROB, DG_SYS_ROB, HFO_ROB, DO_ROB
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        '''
+        rows = [tuple(r) for r in src_df[['ID', 'DATE', 'TIME', 'PLACE', 'EVENT', 'ME_SYS_ROB', 'ME_CYL_ROB', 'DG_SYS_ROB', 'HFO_ROB', 'DO_ROB']].itertuples(index=False, name=None)]
+        if rows:
+            c.executemany(insert_sql, rows)
+        conn_dst.commit()
+        conn_dst.close()
+    except Exception as e:
+        return False, f"Write external DB failed: {e}"
+
+    # 3) Export JS for no-install browser reader
+    try:
+        js_rows = []
+        for _, r in src_df.iterrows():
+            js_rows.append({
+                'ID': int(r['ID']) if pd.notna(r['ID']) else None,
+                'DATE': '' if pd.isna(r['DATE']) else str(r['DATE']),
+                'TIME': '' if pd.isna(r['TIME']) else str(r['TIME']),
+                'PLACE': '' if pd.isna(r['PLACE']) else str(r['PLACE']),
+                'EVENT': '' if pd.isna(r['EVENT']) else str(r['EVENT']),
+                'ME_SYS_ROB': None if pd.isna(r['ME_SYS_ROB']) else float(r['ME_SYS_ROB']),
+                'ME_CYL_ROB': None if pd.isna(r['ME_CYL_ROB']) else float(r['ME_CYL_ROB']),
+                'DG_SYS_ROB': None if pd.isna(r['DG_SYS_ROB']) else float(r['DG_SYS_ROB']),
+                'HFO_ROB': None if pd.isna(r['HFO_ROB']) else float(r['HFO_ROB']),
+                'DO_ROB': None if pd.isna(r['DO_ROB']) else float(r['DO_ROB']),
+            })
+        js_path = os.path.join(target_dir, 'robs_data.js')
+        with open(js_path, 'w', encoding='utf-8') as f:
+            f.write('window.ROBS_DATA = ')
+            f.write(json.dumps(js_rows, ensure_ascii=False))
+            f.write(';\n')
+    except Exception as e:
+        return False, f"Write robs_data.js failed: {e}"
+
+    # 4) Copy HTML reader template next to exported data
+    try:
+        template_path = os.path.abspath(
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', '..', 'ROBS_Read', 'index.html')
+        )
+        if os.path.exists(template_path):
+            shutil.copyfile(template_path, os.path.join(target_dir, 'index.html'))
+            shutil.copyfile(template_path, os.path.join(target_dir, 'ROBS_Read.html'))
+    except Exception:
+        pass
+
+    return True, f"ROBS sync OK ({len(src_df)} rows)"
+
+
+def ensure_external_robs_sync_once():
+    if st.session_state.get('_robs_external_synced_once'):
+        return
+    _s = _load_app_settings()
+    _path = str(_s.get('external_db_path', '') or '').strip()
+    if _path:
+        sync_external_robs_database(_path)
+    st.session_state['_robs_external_synced_once'] = True
 
 def init_db():
     """Initialize SQLite database with events table"""
@@ -331,8 +459,9 @@ def fetch_all_events_stable():
 
 
 def _normalize_numeric_payload(data: dict) -> dict:
-    """Normalize numeric payload values before DB write (max 2 decimals)."""
+    """Normalize numeric payload values before DB write."""
     int_keys = {'me_rev_c', 'cyl_oil_count'}
+    mwh_keys = {'dg1_mwh', 'dg2_mwh', 'dg3_mwh'}
     normalized = {}
     for key, value in data.items():
         if isinstance(value, bool):
@@ -340,7 +469,12 @@ def _normalize_numeric_payload(data: dict) -> dict:
         elif isinstance(value, int):
             normalized[key] = int(value)
         elif isinstance(value, float):
-            normalized[key] = int(round(value)) if key in int_keys else round(float(value), 2)
+            if key in int_keys:
+                normalized[key] = int(round(value))
+            elif key in mwh_keys:
+                normalized[key] = round(float(value), 2)
+            else:
+                normalized[key] = round(float(value), 2)
         else:
             normalized[key] = value
     return normalized
@@ -391,6 +525,32 @@ def delete_event(event_id: int):
     conn.commit()
     conn.close()
     invalidate_events_cache()
+
+# ============ PMS (moved to separate app in PMS/ folder) ============
+
+def init_pms_db():
+    """Initialize PMS helper database used by standalone PMS app."""
+    conn = sqlite3.connect(PMS_DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS pms_reset_marks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            device TEXT NOT NULL,
+            component TEXT NOT NULL,
+            element TEXT NOT NULL,
+            date_text TEXT NOT NULL,
+            reset_ttl REAL,
+            mark TEXT NOT NULL DEFAULT 'X',
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(device, component, element, date_text)
+        )
+    ''')
+    c.execute('''
+        CREATE INDEX IF NOT EXISTS idx_pms_marks_lookup
+        ON pms_reset_marks(device, component, element, date_text)
+    ''')
+    conn.commit()
+    conn.close()
 
 
 # ============ CALCULATION ENGINE ============
@@ -934,12 +1094,12 @@ def _normalize_decimal_input(val):
     return val
 
 
-def safe_float(val, fallback=0.0):
+def safe_float(val, fallback=0.0, decimals=2):
     nval = _normalize_decimal_input(val)
     if nval is None:
         return fallback
     try:
-        return round(float(nval), 2)
+        return round(float(nval), decimals)
     except (ValueError, TypeError):
         return fallback
 
@@ -959,6 +1119,7 @@ HOURS_KEYS = {'me_hrs', 'dg1_hrs', 'dg2_hrs', 'dg3_hrs', 'boiler_hrs',
               'ocl_pp_a', 'ocl_pp_b', 'ocl_pp_c', 'phe_a', 'phe_b',
               'wcu_sep', 'comp_1', 'comp_2', 'w_comp'}
 TEMP_KEYS = {'sea_temp', 'st_lo_tmp'}
+MWH_KEYS = {'dg1_mwh', 'dg2_mwh', 'dg3_mwh'}
 
 def fmt_field(key, val):
     """Format field value for display in input card"""
@@ -970,6 +1131,8 @@ def fmt_field(key, val):
         return f"{float(val):.2f}"
     if key in TEMP_KEYS:
         return f"{float(val):.1f}"
+    if key in MWH_KEYS:
+        return f"{float(val):.2f}"
     # Other numeric fields (me_pwrmtr, dg_mwh, sox_co2)
     v = float(val)
     return f"{v:.2f}" if v != int(v) else str(int(v))
@@ -1033,6 +1196,7 @@ _card_layout = load_card_layout()
 # Initialize database
 init_db()
 ensure_seed_event()
+init_pms_db()
 
 # Page config - sidebar for logbook
 st.set_page_config(
@@ -1179,6 +1343,16 @@ st.markdown("""
         height: 0 !important;
         margin: 0 !important;
         padding: 0 !important;
+    }
+    /* Ensure all containers allow overflow for fixed positioned forms */
+    [data-testid="stVerticalBlockBorderWrapper"] {
+        overflow: visible !important;
+    }
+    [data-testid="stVerticalBlock"] {
+        overflow: visible !important;
+    }
+    [data-testid="stColumn"] {
+        overflow: visible !important;
     }
     /* Reduce column gap in cards for tighter label-input spacing */
     [data-testid="stForm"] [data-testid="stHorizontalBlock"] {
@@ -1364,6 +1538,48 @@ st.markdown("""
         border: 1px solid #eee;
         border-radius: 2px;
         text-align: right;
+    }
+
+    .fp-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: #2c3e50;
+        padding: 2px 6px;
+        line-height: 24px;
+        white-space: nowrap;
+        background: #f0f4f8;
+        border: 1px solid #dde;
+        border-radius: 2px;
+        text-align: right;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .fp-msg-box {
+        background: #f8f9fb;
+        border: 1px solid #d7dee8;
+        border-radius: 2px;
+        padding: 6px 8px;
+        margin: 4px 0 6px 0;
+        min-height: 72px;
+        max-height: 96px;
+        overflow-y: auto;
+        font-size: 10px;
+        color: #2f3b45;
+        font-family: 'Courier New', monospace;
+        line-height: 1.25;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .fp-footer {
+        width: 100%;
+        text-align: right;
+        font-size: 9px;
+        color: #9aa4ad;
+        margin-top: 2px;
+        text-transform: lowercase;
+        letter-spacing: 0.2px;
     }
     
     .card-header-right {
@@ -2235,10 +2451,60 @@ if 'confirm_delete' not in st.session_state:
 if 'show_settings' not in st.session_state:
     st.session_state.show_settings = False
 
+if '_new_form_nonce' not in st.session_state:
+    st.session_state['_new_form_nonce'] = 0
+
+if '_events_table_nonce' not in st.session_state:
+    st.session_state['_events_table_nonce'] = 0
+
+# Notification system for MSG panel
+if '_msg_buffer' not in st.session_state:
+    st.session_state._msg_buffer = []
+
+def add_notification(icon, text):
+    """Add message to MSG buffer (displayed in Functions Panel MSG area)"""
+    msg = f"{icon} {text}"
+    st.session_state._msg_buffer.append(msg)
+    # Keep only last 5 messages
+    if len(st.session_state._msg_buffer) > 5:
+        st.session_state._msg_buffer = st.session_state._msg_buffer[-5:]
+
+def get_msg_display():
+    """Get text for MSG area display"""
+    if not st.session_state._msg_buffer:
+        return "(powiadomienia i alerty będą wyświetlane tutaj)"
+    return "\n".join(st.session_state._msg_buffer)
+
+
+def _start_new_event_entry():
+    """Switch to clean NEW ENTRY mode: clear Input Card widget state and table selection."""
+    st.session_state.editing_id = None
+    st.session_state.new_entry_mode = True
+    st.session_state.confirm_delete = False
+    st.session_state['_new_form_nonce'] = int(st.session_state.get('_new_form_nonce', 0)) + 1
+    st.session_state['_events_table_nonce'] = int(st.session_state.get('_events_table_nonce', 0)) + 1
+
+    _clear_prefixes = [
+        'inp_date', 'inp_time', 'inp_event', 'inp_place',
+        'inp_me_rev', 'inp_main_fm', 'inp_dg_in', 'inp_dg_out', 'inp_blr_fm',
+        'inp_cyl_oil', 'inp_me_pwr', 'inp_me_hrs', 'inp_dg1_hrs', 'inp_dg2_hrs',
+        'inp_dg3_hrs', 'inp_blr_hrs', 'inp_dg1_mwh', 'inp_dg2_mwh', 'inp_dg3_mwh',
+        'inp_sox', 'inp_ocl_a', 'inp_ocl_b', 'inp_ocl_c', 'inp_phe_a', 'inp_phe_b',
+        'inp_sea_temp', 'inp_st_lo', 'inp_wcu', 'inp_comp1', 'inp_comp2', 'inp_wcomp',
+    ]
+    _old_nonce = int(st.session_state.get('_new_form_nonce', 0)) - 1
+    _suffixes = ["_new", f"_new_{_old_nonce}", f"_new_{_old_nonce + 1}"]
+    for _pref in _clear_prefixes:
+        for _suf in _suffixes:
+            _k = _pref + _suf
+            if _k in st.session_state:
+                st.session_state.pop(_k, None)
+
 ensure_calculated_fields_ready_once()
+ensure_external_robs_sync_once()
 
 # Dynamic widget key suffix — forces fresh widgets when switching events
-_key_suffix = f"_e{st.session_state.editing_id}" if st.session_state.editing_id else "_new"
+_key_suffix = f"_e{st.session_state.editing_id}" if st.session_state.editing_id else f"_new_{st.session_state.get('_new_form_nonce', 0)}"
 
 # Event types
 EVENT_TYPES = ["NOON", "STBY", "EOSP", "SOSP", "FWE", "ARRIVAL", "DEPARTURE", "SHIFTING-BEG", "SHIFTING-END", "MID"]
@@ -2979,9 +3245,9 @@ with _inp_col:
                 'dg2_hrs': safe_float(inputs['inp_dg2_hrs']),
                 'dg3_hrs': safe_float(inputs['inp_dg3_hrs']),
                 'boiler_hrs': safe_float(inputs['inp_blr_hrs']),
-                'dg1_mwh': safe_float(inputs['inp_dg1_mwh']),
-                'dg2_mwh': safe_float(inputs['inp_dg2_mwh']),
-                'dg3_mwh': safe_float(inputs['inp_dg3_mwh']),
+                'dg1_mwh': safe_float(inputs['inp_dg1_mwh'], decimals=4),
+                'dg2_mwh': safe_float(inputs['inp_dg2_mwh'], decimals=4),
+                'dg3_mwh': safe_float(inputs['inp_dg3_mwh'], decimals=4),
                 'sox_co2': safe_float(inputs['inp_sox']),
                 'ocl_pp_a': safe_float(inputs['inp_ocl_a']) if not row2_off else None,
                 'ocl_pp_b': safe_float(inputs['inp_ocl_b']) if not row2_off else None,
@@ -3013,6 +3279,9 @@ with _inp_col:
                     rebuild_chart_data()
                 except Exception:
                     pass
+                _sync_path = str(_load_app_settings().get('external_db_path', '') or '').strip()
+                if _sync_path:
+                    sync_external_robs_database(_sync_path)
                 st.success(f"Event #{st.session_state.editing_id} updated!")
             else:
                 insert_event(event_data)
@@ -3025,6 +3294,9 @@ with _inp_col:
                     rebuild_chart_data()
                 except Exception:
                     pass
+                _sync_path = str(_load_app_settings().get('external_db_path', '') or '').strip()
+                if _sync_path:
+                    sync_external_robs_database(_sync_path)
                 st.success("New event saved!")
             st.session_state.editing_id = None
             st.session_state.new_entry_mode = False
@@ -3050,6 +3322,9 @@ def _confirm_delete_dialog():
                 rebuild_chart_data()
             except Exception:
                 pass
+            _sync_path = str(_load_app_settings().get('external_db_path', '') or '').strip()
+            if _sync_path:
+                sync_external_robs_database(_sync_path)
             st.session_state.editing_id = None
             st.session_state.confirm_delete = False
             st.rerun()
@@ -3067,86 +3342,140 @@ with _func_col:
     with st.form("functions_panel_form"):
         st.markdown('<div class="card-header-right">FUNCTIONS PANEL</div>', unsafe_allow_html=True)
 
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">HFO density:</div>', unsafe_allow_html=True)
         _hfo_density_val = float(_app_settings_now.get('hfo_density', 0.919))
-        _hfo_density = st.number_input(
-            "HFO density",
-            value=_hfo_density_val,
-            min_value=0.0,
-            step=0.001,
-            format="%.3f",
-            key="sett_hfo_density",
-            label_visibility="collapsed"
-        )
-
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">DO density:</div>', unsafe_allow_html=True)
         _do_density_val = float(_app_settings_now.get('do_density', 0.870))
-        _do_density = st.number_input(
-            "DO density",
-            value=_do_density_val,
-            min_value=0.0,
-            step=0.001,
-            format="%.3f",
-            key="sett_do_density",
-            label_visibility="collapsed"
-        )
+        _dep_idx = 0 if _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes' else 1
+        _blr_mode_now = _app_settings_now.get('boiler_fuel_mode', 'flowmeter')
+        _blr_rate_val = float(_app_settings_now.get('boiler_user_defined_rate') or 0.0)
+        _blr_default_text = 'Flowmeter' if _blr_mode_now == 'flowmeter' else f"{_blr_rate_val:.4f}"
+        _ext_db_path_val = str(_app_settings_now.get('external_db_path', '') or '')
 
+        _fr1c1, _fr1c2 = st.columns([1.15, 1.35])
+        with _fr1c1:
+            st.markdown('<div class="fp-label">HFO Density [mt/l]</div>', unsafe_allow_html=True)
+        with _fr1c2:
+            _hfo_density = st.number_input(
+                "HFO Density",
+                value=_hfo_density_val,
+                min_value=0.0,
+                step=0.001,
+                format="%.3f",
+                key="sett_hfo_density",
+                label_visibility="collapsed"
+            )
+
+        _fr2c1, _fr2c2 = st.columns([1.15, 1.35])
+        with _fr2c1:
+            st.markdown('<div class="fp-label">DO Density [mt/l]</div>', unsafe_allow_html=True)
+        with _fr2c2:
+            _do_density = st.number_input(
+                "DO Density",
+                value=_do_density_val,
+                min_value=0.0,
+                step=0.001,
+                format="%.3f",
+                key="sett_do_density",
+                label_visibility="collapsed"
+            )
+
+        _fr3c1, _fr3c2 = st.columns([1.15, 1.35])
+        with _fr3c1:
+            st.markdown('<div class="fp-label">Does DEP stop M/E?</div>', unsafe_allow_html=True)
+        with _fr3c2:
+            _dep_choice = st.selectbox(
+                "Does DEP stop M/E?",
+                ["Yes", "No"],
+                index=_dep_idx,
+                key="sett_dep_select",
+                label_visibility="collapsed"
+            )
+
+        _fr4c1, _fr4c2 = st.columns([1.15, 1.35])
+        with _fr4c1:
+            st.markdown('<div class="fp-label">Boiler Fuel Consumption</div>', unsafe_allow_html=True)
+        with _fr4c2:
+            _blr_input = st.text_input(
+                "Boiler Fuel Consumption",
+                value=_blr_default_text,
+                key="sett_blr_text",
+                label_visibility="collapsed",
+                placeholder="Flowmeter or value [mt/h]"
+            )
+
+        _fr5c1, _fr5c2 = st.columns([1.15, 1.35])
+        with _fr5c1:
+            st.markdown('<div class="fp-label">External DB path</div>', unsafe_allow_html=True)
+        with _fr5c2:
+            _ext_db_path = st.text_input(
+                "External DB path",
+                value=_ext_db_path_val,
+                key="sett_external_db_path",
+                label_visibility="collapsed",
+                placeholder="Path to folder for logbook_robs.db"
+            )
+
+        _fr6c1, _fr6c2 = st.columns([1.15, 1.35])
+        with _fr6c1:
+            st.markdown('<div class="fp-label">MSG</div>', unsafe_allow_html=True)
+        with _fr6c2:
+            st.markdown('&nbsp;', unsafe_allow_html=True)
+
+        # MSG area - wyświetla powiadomienia z bufora
+        _msg_text = get_msg_display()
         st.markdown(
-            '<div style="border-top:1px solid #dde;margin:6px 0 4px 0;'
-            'font-size:12px;font-weight:700;color:#2c3e50;padding-top:5px;">⚙ SETTINGS</div>',
+            f'<div class="fp-msg-box">'
+            f'{_msg_text}'
+            f'</div>',
             unsafe_allow_html=True
         )
 
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:4px 0 2px 0;">Does DEP stop M/E counters?</div>', unsafe_allow_html=True)
-        _dep_idx = 0 if _app_settings_now.get('dep_stops_me_counters', 'no') == 'yes' else 1
-        _dep_choice = st.radio(
-            "dep_me_counters",
-            ["Yes", "No"],
-            index=_dep_idx,
-            horizontal=True,
-            label_visibility="collapsed",
-            key="sett_dep_radio"
-        )
-
-        st.markdown('<div style="font-size:12px;font-weight:600;color:#2c3e50;margin:6px 0 2px 0;">Boiler fuel consumption</div>', unsafe_allow_html=True)
-        _blr_idx = 1 if _app_settings_now.get('boiler_fuel_mode', 'flowmeter') == 'user_defined' else 0
-        _blr_choice = st.radio(
-            "boiler_mode",
-            ["Flowmeter", "User Defined [mt/h]"],
-            index=_blr_idx,
-            horizontal=True,
-            label_visibility="collapsed",
-            key="sett_blr_radio"
-        )
-        _blr_rate_val = float(_app_settings_now.get('boiler_user_defined_rate') or 0.0)
-        _blr_rate = st.number_input(
-            "Rate [mt/h]:",
-            value=_blr_rate_val,
-            min_value=0.0,
-            step=0.0001,
-            format="%.4f",
-            key="sett_blr_rate"
-        )
-
+        # Save button
         _save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
 
+        # Copyright
+        st.markdown(
+            '<div class="fp-footer">'
+            '2026 jcz'
+            '</div>',
+            unsafe_allow_html=True
+        )
+
     if _save_settings:
+        _blr_input_clean = str(_blr_input).strip()
+        _blr_mode = 'flowmeter'
+        _blr_rate = 0.0
+        if _blr_input_clean.lower() != 'flowmeter':
+            try:
+                _blr_rate = float(_blr_input_clean.replace(',', '.'))
+                _blr_mode = 'user_defined'
+            except ValueError:
+                add_notification("❌", "Boiler Fuel Consumption: enter 'Flowmeter' or numeric value.")
+                st.rerun()
+
         _new_settings = {
             'dep_stops_me_counters': 'yes' if _dep_choice == 'Yes' else 'no',
-            'boiler_fuel_mode': 'user_defined' if 'User Defined' in _blr_choice else 'flowmeter',
+            'boiler_fuel_mode': _blr_mode,
             'boiler_user_defined_rate': float(_blr_rate),
             'hfo_density': float(_hfo_density),
             'do_density': float(_do_density),
+            'external_db_path': str(_ext_db_path).strip(),
         }
         if not _save_app_settings(_new_settings):
-            st.toast("Failed to save settings (check file permissions).", icon="❌")
+            add_notification("❌", "Failed to save settings (check file permissions).")
         else:
-            st.session_state['_settings_saved_toast'] = True
+            _path_now = str(_new_settings.get('external_db_path', '') or '').strip()
+            if _path_now:
+                _ok, _msg = sync_external_robs_database(_path_now)
+                if _ok:
+                    add_notification("✅", _msg)
+                else:
+                    add_notification("❌", _msg)
+            add_notification("✅", "Settings saved!")
             st.rerun()
 
-# Show settings-saved toast after rerun (so it appears on the fresh render)
-if st.session_state.pop('_settings_saved_toast', False):
-    st.toast("Settings saved!", icon="✅")
+# Show any pending settings-saved notification (handled via MSG panel now)
+# if st.session_state.pop('_settings_saved_toast', False):
+#     st.toast("Settings saved!", icon="✅")
 
 # ============ LEFT BAR (Sidebar) - Events Logbook ============
 with st.sidebar:
@@ -3203,9 +3532,7 @@ with st.sidebar:
         _sb_c1, _sb_c2, _sb_c3, _sb_c4 = st.columns([0.8, 0.8, 2.4, 0.5])
         with _sb_c1:
             if st.button("\u2795", use_container_width=True, type="secondary"):
-                st.session_state.editing_id = None
-                st.session_state.new_entry_mode = True
-                st.session_state.confirm_delete = False
+                _start_new_event_entry()
                 st.rerun()
         with _sb_c2:
             with st.popover("\U0001F4CB", use_container_width=True):
@@ -3363,7 +3690,7 @@ with st.sidebar:
             column_config=_col_cfg,
             on_select="rerun",
             selection_mode="single-row",
-            key="events_table",
+            key=f"events_table_{st.session_state.get('_events_table_nonce', 0)}",
         )
         
         if selection and selection.selection and selection.selection.rows:
@@ -3590,7 +3917,7 @@ with st.sidebar:
                 # ── DG MWh (difference between end and start) ──
                 _dg_mwh = {}
                 for dg, k in [('DG1', 'dg1_mwh'), ('DG2', 'dg2_mwh'), ('DG3', 'dg3_mwh')]:
-                    _dg_mwh[dg] = round(_ec_safe_float(ev_end.get(k)) - _ec_safe_float(ev_start.get(k)), 2)
+                    _dg_mwh[dg] = int(round((_ec_safe_float(ev_end.get(k)) - _ec_safe_float(ev_start.get(k))) * 1_000_000, 0))
 
                 # ── AVG PWR / AVG RPM / TTL PWR / TTL RPM (end - start) ──
                 _ttl_pwr = round(max(_ec_safe_float(ev_end.get('me_pwrmtr')) - _ec_safe_float(ev_start.get('me_pwrmtr')), 0), 2)
@@ -3663,12 +3990,12 @@ with st.sidebar:
                 _ect_html = '''
                 <style>
                 .ect2 {width:100%;border-collapse:collapse;margin:0 0 2px 0;}
-                .ect2 td {padding:2px 4px;font-size:12px;}
-                .ect2 .sh {background:#2c3e50;color:#fff;font-weight:700;font-size:10px;text-align:center;padding:2px 6px;}
-                .ect2 .sub {background:#ecf0f1;color:#2c3e50;font-weight:600;font-size:10px;text-align:center;}
-                .ect2 .el {background:#f0f4f8;color:#2c3e50;font-weight:600;font-size:11px;text-align:right;white-space:nowrap;border:1px solid #dde;width:22%;}
-                .ect2 .ev {background:#eaf2fb;color:#2c3e50;font-weight:600;font-size:12px;text-align:center;border:1px solid #b8d4f0;width:28%;}
-                .ect2 .ttl {background:#d5e8d4;color:#2c3e50;font-weight:700;font-size:12px;text-align:center;border:1px solid #b8d4f0;}
+                .ect2 td {padding:3px 5px;font-size:14px;}
+                .ect2 .sh {background:#2c3e50;color:#fff;font-weight:700;font-size:12px;text-align:center;padding:3px 6px;}
+                .ect2 .sub {background:#ecf0f1;color:#2c3e50;font-weight:600;font-size:12px;text-align:center;}
+                .ect2 .el {background:#f0f4f8;color:#2c3e50;font-weight:600;font-size:13px;text-align:right;white-space:nowrap;border:1px solid #dde;width:22%;}
+                .ect2 .ev {background:#eaf2fb;color:#2c3e50;font-weight:600;font-size:14px;text-align:center;border:1px solid #b8d4f0;width:28%;}
+                .ect2 .ttl {background:#d5e8d4;color:#2c3e50;font-weight:700;font-size:14px;text-align:center;border:1px solid #b8d4f0;}
                 </style>
                 '''
 
@@ -3676,7 +4003,7 @@ with st.sidebar:
                 _ect_html += f'''
                 <table class="ect2">
                 <tr><td class="sh" colspan="4">EVENT CALCULATOR  ID {_ec_sid} → {_ec_eid}</td></tr>
-                <tr><td class="el">TTL TIME</td><td class="ttl" colspan="3">{round(_ttl_min/60, 2)} h</td></tr>
+                <tr><td class="el">TTL TIME</td><td class="ttl" colspan="3">{_ttl_time_s}</td></tr>
                 <tr><td class="sh" colspan="2">TOTAL RHS</td><td class="sh" colspan="2">FUEL CONSUMPTION</td></tr>
                 <tr><td class="sub">DEVICE</td><td class="sub">RHS</td><td class="sub ev-hfo">HFO</td><td class="sub ev-do">DO</td></tr>
                 <tr><td class="el">M/E</td><td class="ev">{_ecv(_rhs["ME"])}</td>
@@ -3707,11 +4034,11 @@ with st.sidebar:
                 _ect_html += f'''
                 <table class="ect2">
                 <tr><td class="sh" colspan="2">POWER PRODUCTION</td><td class="sh" colspan="2">OIL ROB</td></tr>
-                <tr><td class="el">D/G#1</td><td class="ev">{_ecv(_dg_mwh["DG1"])}</td>
+                <tr><td class="el">D/G#1 [kWh]</td><td class="ev">{_ecv(_dg_mwh["DG1"], decimals=0)}</td>
                     <td class="el el-oil">M/E SYS</td><td class="ev ev-oil">{_ecv(_oil_rob["me_sys"])}</td></tr>
-                <tr><td class="el">D/G#2</td><td class="ev">{_ecv(_dg_mwh["DG2"])}</td>
+                <tr><td class="el">D/G#2 [kWh]</td><td class="ev">{_ecv(_dg_mwh["DG2"], decimals=0)}</td>
                     <td class="el el-oil">M/E CYL</td><td class="ev ev-oil">{_ecv(_oil_rob["me_cyl"])}</td></tr>
-                <tr><td class="el">D/G#3</td><td class="ev">{_ecv(_dg_mwh["DG3"])}</td>
+                <tr><td class="el">D/G#3 [kWh]</td><td class="ev">{_ecv(_dg_mwh["DG3"], decimals=0)}</td>
                     <td class="el el-oil">D/G SYS</td><td class="ev ev-oil">{_ecv(_oil_rob["dg_sys"])}</td></tr>
                 </table>
                 '''
@@ -3757,6 +4084,7 @@ with st.sidebar:
     else:
         st.info("No events yet. Use INPUT CARD to add entries.")
         if st.button("\u2795 NEW ENTRY", type="secondary"):
-            st.session_state.editing_id = None
-            st.session_state.new_entry_mode = True
+            _start_new_event_entry()
             st.rerun()
+
+
