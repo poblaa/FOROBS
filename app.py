@@ -1132,7 +1132,7 @@ def fmt_field(key, val):
     if key in TEMP_KEYS:
         return f"{float(val):.1f}"
     if key in MWH_KEYS:
-        return f"{float(val):.2f}"
+        return f"{float(val):.4f}"
     # Other numeric fields (me_pwrmtr, dg_mwh, sox_co2)
     v = float(val)
     return f"{v:.2f}" if v != int(v) else str(int(v))
@@ -4064,8 +4064,8 @@ with st.sidebar:
                 <table class="ect2">
                 <tr><td class="sh" colspan="4">SCRUBBER</td></tr>
                 <tr><td class="el">RATIO</td><td class="ev">{_ecv(_avg_sox)}</td>
-                    <td class="el">OPEN</td><td class="ev">{_ec_min_to_hhmm(_ol_min)}</td></tr>
-                <tr><td class="el">CLOSE</td><td class="ev">{_ec_min_to_hhmm(_cl_min)}</td>
+                    <td class="el">OPEN</td><td class="ev">{_ec_min_to_hhmm(_cl_min)}</td></tr>
+                <tr><td class="el">CLOSE</td><td class="ev">{_ec_min_to_hhmm(_ol_min)}</td>
                     <td class="el">TOTAL</td><td class="ev">{_ec_min_to_hhmm(_ol_min + _cl_min)}</td></tr>
                 </table>
                 '''
