@@ -3800,7 +3800,9 @@ with st.sidebar:
                 f = float(val)
                 if f != f:  # NaN check (NaN != NaN is always True)
                     return '--'
-                s = f"{f:.{decimals}f}".rstrip('0').rstrip('.')
+                s = f"{f:.{decimals}f}"
+                if decimals > 0:
+                    s = s.rstrip('0').rstrip('.')
                 return s if s and s != '0' else '--'
             except (ValueError, TypeError):
                 return '--'
