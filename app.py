@@ -472,7 +472,7 @@ def _normalize_numeric_payload(data: dict) -> dict:
             if key in int_keys:
                 normalized[key] = int(round(value))
             elif key in mwh_keys:
-                normalized[key] = round(float(value), 2)
+                normalized[key] = round(float(value), 4)
             else:
                 normalized[key] = round(float(value), 2)
         else:
@@ -3928,7 +3928,17 @@ with st.sidebar:
 
                 # ── SCRUBBER OL / CL tracking ──
                 def _ec_scrubber_tracking(sid, eid, range_df):
-                    """Calculate time in Open Loop and Closed Loop."""
+                    """Calculate time in Open Loop and Closed Loop.
+
+                    Uses each event's st_time (steaming time from previous event)
+                    to accumulate OL / CL minutes.  The first event in the range
+                    is skipped (its st_time belongs to the period before the range);
+                    all subsequent events including the last are counted.
+
+                    Place-name convention (zone boundary markers):
+                      CL-OL place  →  ship enters CL zone → mode becomes CL
+                      OL-CL place  →  ship enters OL zone → mode becomes OL
+                    """
                     conn = None
                     try:
                         conn = get_connection()
@@ -3940,34 +3950,29 @@ with st.sidebar:
                     finally:
                         if conn:
                             conn.close()
-                    # Find last OL-CL or CL-OL before start
+                    # Find last OL-CL or CL-OL before start to determine initial mode
                     initial_mode = 'OL'  # default assume open loop
                     for _, pr in prior_df.iterrows():
                         p = str(pr.get('place', '')).upper()
                         if 'OL' in p and 'CL' in p:
-                            # Determine direction: OL→CL means now in CL; CL→OL means now in OL
                             ol_pos = p.find('OL')
                             cl_pos = p.find('CL')
                             if ol_pos < cl_pos:
-                                initial_mode = 'CL'  # OL→CL = scrubber switched to closed
+                                initial_mode = 'OL'  # OL-CL place = ship in OL zone
                             else:
-                                initial_mode = 'OL'  # CL→OL = scrubber switched to open
+                                initial_mode = 'CL'  # CL-OL place = ship in CL zone
                             break
 
-                    # Walk through range events and track mode switches using
-                    # actual datetime intervals between consecutive events.
+                    # Walk through range events using st_time values.
+                    # Skip the first event (its st_time is from before the range).
                     current_mode = initial_mode
                     ol_min = 0
                     cl_min = 0
                     _rows = [r for _, r in range_df.iterrows()]
-                    for i, r in enumerate(_rows[:-1]):
-                        _dt_cur = _ec_parse_dt(r)
-                        _dt_nxt = _ec_parse_dt(_rows[i + 1])
-                        if _dt_cur and _dt_nxt:
-                            dur = max(0, int((_dt_nxt - _dt_cur).total_seconds() / 60))
-                        else:
-                            dur = _ec_hhmm_to_min(r.get('st_time'))
-                        # This event's duration was spent in the CURRENT mode
+                    for i in range(1, len(_rows)):
+                        r = _rows[i]
+                        dur = _ec_hhmm_to_min(r.get('st_time'))
+                        # This event's st_time was spent in the CURRENT mode
                         if current_mode == 'OL':
                             ol_min += dur
                         else:
@@ -3978,9 +3983,9 @@ with st.sidebar:
                             ol_pos = p.find('OL')
                             cl_pos = p.find('CL')
                             if ol_pos < cl_pos:
-                                current_mode = 'CL'  # OL→CL
+                                current_mode = 'OL'  # OL-CL place = entering OL zone
                             else:
-                                current_mode = 'OL'  # CL→OL
+                                current_mode = 'CL'  # CL-OL place = entering CL zone
                     return ol_min, cl_min
 
                 _ol_min, _cl_min = _ec_scrubber_tracking(_ec_sid, _ec_eid, range_df)
